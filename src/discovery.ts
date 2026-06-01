@@ -2,7 +2,7 @@ import type { Address, Candidate, ReferenceMessage } from './types.js';
 import { isInit } from './identity.js';
 import { DEVICE } from './messages.js';
 
-export const PHASE2_BOOTSTRAP_OWNER = 'gj49Uq4Hxwv-1IcJjrXT1OZaWkfPtqyqbdqadExs9mQ';
+export const PHASE2_BOOTSTRAP_OWNER = 'uAaRGha_a1ni_VjLf9Be2SFB7NJw1PWnjevdfeuJ_7c';
 
 export interface GqlNode {
 	id: string;
@@ -90,7 +90,7 @@ export interface DiscoverArgs {
 
 /** Discover all candidate `set`s for a reference, paginating in data-layer order. */
 export async function discoverSets(args: DiscoverArgs): Promise<Candidate[]> {
-	const { endpoint, fetch: f, referenceId, authority, minBlock = 0, maxPages = 20 } = args;
+	const { endpoint, fetch: f, referenceId, authority, minBlock = 0, maxPages = 100 } = args;
 	const out: Candidate[] = [];
 	let after: string | undefined;
 	let index = 0;
@@ -170,7 +170,7 @@ export async function discoverReferencesByAuthority(args: {
 	maxPages?: number;
 	trustedPublishers?: Address[];
 }): Promise<DiscoveredReference[]> {
-	const { endpoint, fetch: f, authority, maxPages = 20, trustedPublishers = [PHASE2_BOOTSTRAP_OWNER] } = args;
+	const { endpoint, fetch: f, authority, maxPages = 100, trustedPublishers = [PHASE2_BOOTSTRAP_OWNER] } = args;
 	const refs = new Map<string, DiscoveredReference>();
 
 	await collectReferenceInits({

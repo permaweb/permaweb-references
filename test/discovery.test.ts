@@ -107,6 +107,28 @@ describe('discoverSets pagination', () => {
 		expect(out.map((c) => c.position.index)).toEqual([0, 1, 2]);
 	});
 
+	it('honors an explicit maxPages cap', async () => {
+		let call = 0;
+		const fetchImpl = (async () => {
+			call++;
+			return new Response(
+				JSON.stringify({
+					data: {
+						transactions: {
+							pageInfo: { hasNextPage: true },
+							edges: [{ cursor: `c${call}`, node: node(`id-${call}`, 'O', { device: 'reference@1.0', 'reference-id': 'R' }, call) }],
+						},
+					},
+				}),
+				{ status: 200, headers: { 'content-type': 'application/json' } },
+			);
+		}) as unknown as typeof fetch;
+
+		const out = await discoverSets({ endpoint: 'https://gw/graphql', fetch: fetchImpl, referenceId: 'R', authority: 'O', maxPages: 2 });
+		expect(call).toBe(2);
+		expect(out.map((c) => c.id)).toEqual(['id-1', 'id-2']);
+	});
+
 	it('re-checks device and reference-id locally instead of trusting gql filters', async () => {
 		const edges = [
 			{ cursor: 'c0', node: node('wrong-ref', 'O', { device: 'reference@1.0', 'reference-id': 'OTHER' }, 1) },
