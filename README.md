@@ -113,19 +113,31 @@ await names.updateReference(referenceId, {
 });
 ```
 
-The signer must be the reference authority.
+The signer must be the reference authority. The SDK checks the current reference
+authority before posting and throws without sending if the signer does not match.
+
+When `timestamp` is not supplied, `updateReference` reads the current reference
+state and uses:
+
+```ts
+Math.max(Date.now(), latestTimestamp + 1)
+```
+
+This keeps updates strictly newer even if the latest reference timestamp is ahead
+of the local clock or multiple updates happen close together. Pass `timestamp`
+explicitly only when you need to control the nonce yourself.
 
 ## Create References
 
 ```ts
 const { referenceId } = await names.createReference({
-  authority: authorityAddress,
   value: targetTxId,
 });
 ```
 
-For user-created references, set `authority` to the controlling wallet address.
-The resulting data item ID is the reference ID.
+For user-created references, `authority` defaults to the signer address. Pass an
+explicit `authority` when a bootstrap publisher is creating the reference on
+behalf of another wallet. The resulting data item ID is the reference ID.
 
 ## Configuration
 
@@ -134,9 +146,9 @@ const names = new ReferenceClient({
   gateway: 'https://arweave.net',
   graphql: 'https://arweave.net/graphql',
   bundler: 'https://up.arweave.net',
-  namespace: 'DmNd29cxXHDWuuSfVqCLJ8vKz8D0abctrADPPe0Vn60',
+  namespace: 'NgWK2T4qon7zvNHMm_x0Ggu72wehg--J8Wjbk5Cas5M',
   trustedPublishers: [
-    'gj49Uq4Hxwv-1IcJjrXT1OZaWkfPtqyqbdqadExs9mQ',
+    'uAaRGha_a1ni_VjLf9Be2SFB7NJw1PWnjevdfeuJ_7c',
   ],
   fetch,
 });
@@ -164,7 +176,7 @@ authority tag = user wallet
 By default, the trusted bootstrap publisher is:
 
 ```txt
-gj49Uq4Hxwv-1IcJjrXT1OZaWkfPtqyqbdqadExs9mQ
+uAaRGha_a1ni_VjLf9Be2SFB7NJw1PWnjevdfeuJ_7c
 ```
 
 `findReferences(authority)` accepts a reference init when:
@@ -179,6 +191,10 @@ owner.address is either:
 
 This supports the current phase-2 bootstrap and future direct user-published
 references while rejecting authority-tagged references from unknown publishers.
+
+Reference and update discovery request 100 GraphQL edges per page and scan up to
+100 pages by default. Low-level discovery helpers accept `maxPages` when a
+caller wants a different scan cap.
 
 ## Low-Level Exports
 

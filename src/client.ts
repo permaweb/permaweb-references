@@ -7,7 +7,7 @@ import { parseNamespace, type Namespace } from './namespace.js';
 import type { Signer } from './signer.js';
 
 /** The fixed phase-2 namespace snapshot (name -> reference-id). Override via config. */
-export const PHASE2_NAMESPACE = 'DmNd29cxXHDWuuSfVqCLJ8vKz8D0abctrADPPe0Vn60';
+export const PHASE2_NAMESPACE = 'NgWK2T4qon7zvNHMm_x0Ggu72wehg--J8Wjbk5Cas5M';
 
 export interface ReferenceClientConfig {
 	/** Tx + GraphQL base. Default https://arweave.net; use any gateway you like. */
@@ -132,7 +132,8 @@ export class ReferenceClient {
 	/** Create a new reference (an `init`). The resulting data-item id is the reference id. */
 	async createReference(opts: { value?: string; authority?: string; timestamp?: number } = {}): Promise<{ referenceId: string }> {
 		const signer = this.requireSigner();
-		const { tags } = buildInit({ value: opts.value, authority: opts.authority, timestamp: opts.timestamp ?? Date.now() });
+		const authority = opts.authority ?? await signer.address();
+		const { tags } = buildInit({ value: opts.value, authority, timestamp: opts.timestamp ?? Date.now() });
 		const { id } = await signer.send({ tags, data: ' ' }, { bundler: this.bundler, fetch: this.fetchImpl });
 		return { referenceId: id };
 	}
@@ -140,7 +141,14 @@ export class ReferenceClient {
 	/** Update a reference's value. The signer must be the reference's authority. */
 	async updateReference(referenceId: string, opts: { value?: string; timestamp?: number } = {}): Promise<{ id: string }> {
 		const signer = this.requireSigner();
-		const { tags } = buildSet({ referenceId, value: opts.value, timestamp: opts.timestamp ?? Date.now() });
+		const current = await this.getReference(referenceId);
+		if (!current) throw new Error(`reference not found: ${referenceId}`);
+		const signerAddress = await signer.address();
+		if (current.authority !== signerAddress) {
+			throw new Error(`signer is not reference authority for ${referenceId}`);
+		}
+		const timestamp = opts.timestamp ?? Math.max(Date.now(), current.timestamp + 1);
+		const { tags } = buildSet({ referenceId, value: opts.value, timestamp });
 		return signer.send({ tags, data: ' ' }, { bundler: this.bundler, fetch: this.fetchImpl });
 	}
 }
