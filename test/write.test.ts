@@ -1,21 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import { ReferenceClient } from '../src/client';
+import type { SendOptions } from '../src/signer';
 import type { Signer } from '../src/signer';
 import type { Tag } from '../src/types';
 
 function stub() {
 	const sends: { tags: Tag[]; data?: string }[] = [];
+	const opts: (SendOptions | undefined)[] = [];
 	let n = 0;
 	const signer: Signer = {
 		async address() {
 			return 'ME';
 		},
-		async send(m) {
+		async send(m, sendOpts) {
 			sends.push(m);
+			opts.push(sendOpts);
 			return { id: `id-${++n}` };
 		},
 	};
-	return { signer, sends };
+	return { signer, sends, opts };
 }
 
 const noFetch = (async () => new Response('{}')) as unknown as typeof fetch;
@@ -32,6 +35,13 @@ describe('createReference (init)', () => {
 		expect(m['reference-value']).toBe('TARGET');
 		expect(m['reference-id']).toBeUndefined();
 		expect(m.timestamp).toBeDefined();
+	});
+
+	it('passes the configured bundler to the signer', async () => {
+		const s = stub();
+		const client = new ReferenceClient({ fetch: noFetch, signer: s.signer, bundler: 'https://hb.example/~bundler@1.0/tx' });
+		await client.createReference({ value: 'TARGET' });
+		expect(s.opts[0]?.bundler).toBe('https://hb.example/~bundler@1.0/tx');
 	});
 });
 

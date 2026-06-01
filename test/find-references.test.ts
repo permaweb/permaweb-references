@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { ReferenceClient } from '../src/client';
-import type { GqlNode } from '../src/discovery';
+import { PHASE2_BOOTSTRAP_OWNER, type GqlNode } from '../src/discovery';
 
 const ref = (id: string, authority: string, value: string, extra: Record<string, string> = {}): GqlNode => ({
 	id,
-	owner: { address: 'gj49' },
+	owner: { address: PHASE2_BOOTSTRAP_OWNER },
 	tags: Object.entries({ device: 'reference@1.0', authority, 'reference-value': value, ...extra }).map(([name, v]) => ({ name, value: v })),
 });
 

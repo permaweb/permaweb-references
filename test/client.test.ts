@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ReferenceClient } from '../src/client';
-import type { GqlNode } from '../src/discovery';
+import { PHASE2_BOOTSTRAP_OWNER, type GqlNode } from '../src/discovery';
 
 const node = (id: string, owner: string, tags: Record<string, string>, block?: number): GqlNode => ({
 	id,
@@ -64,6 +64,12 @@ describe('ReferenceClient.resolveReference', () => {
 		const client = new ReferenceClient({ fetch: gw.fetch });
 		expect(await client.getReference('missing')).toBeUndefined();
 	});
+
+	it('returns undefined when the id is not a reference init', async () => {
+		const gw = gateway({ init: node('not-ref', 'A', { device: 'other@1.0', 'reference-value': 'BASE' }), sets: [] });
+		const client = new ReferenceClient({ fetch: gw.fetch });
+		expect(await client.getReference('not-ref')).toBeUndefined();
+	});
 });
 
 describe('ReferenceClient config', () => {
@@ -74,5 +80,30 @@ describe('ReferenceClient config', () => {
 		const custom = new ReferenceClient({ fetch: gateway({}).fetch, gateway: 'https://my.gw', bundler: 'https://my.bundler/~bundler@1.0/tx' });
 		expect(custom.graphql).toBe('https://my.gw/graphql');
 		expect(custom.bundler).toBe('https://my.bundler/~bundler@1.0/tx');
+	});
+});
+
+describe('ReferenceClient.findReferences', () => {
+	it('delegates to authority-based reference discovery', async () => {
+		const fetchImpl = (async (_url: string, init?: RequestInit) => {
+			const nodes = [
+				node('owned-init', 'AUTH', { device: 'reference@1.0', authority: 'AUTH' }),
+				node('bootstrap-init', PHASE2_BOOTSTRAP_OWNER, { device: 'reference@1.0', authority: 'AUTH' }),
+			];
+			return new Response(
+				JSON.stringify({
+					data: {
+						transactions: {
+							pageInfo: { hasNextPage: false },
+							edges: nodes.map((n, i) => ({ cursor: `c${i}`, node: n })),
+						},
+					},
+				}),
+				{ status: 200, headers: { 'content-type': 'application/json' } },
+			);
+		}) as unknown as typeof fetch;
+
+		const client = new ReferenceClient({ fetch: fetchImpl, namespace: null });
+		expect((await client.findReferences('AUTH')).map((ref) => ref.referenceId)).toEqual(['owned-init', 'bootstrap-init']);
 	});
 });
