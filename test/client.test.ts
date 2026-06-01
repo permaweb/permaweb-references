@@ -64,12 +64,6 @@ describe('ReferenceClient.resolveReference', () => {
 		const client = new ReferenceClient({ fetch: gw.fetch });
 		expect(await client.getReference('missing')).toBeUndefined();
 	});
-
-	it('throws when verify is requested (not implemented yet)', async () => {
-		const gw = gateway({ init, sets: [] });
-		const client = new ReferenceClient({ fetch: gw.fetch });
-		await expect(client.getReference(REF, { verify: true })).rejects.toThrow(/not implemented/i);
-	});
 });
 
 describe('ReferenceClient config', () => {

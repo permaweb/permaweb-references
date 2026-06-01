@@ -21,7 +21,7 @@ function stub() {
 const noFetch = (async () => new Response('{}')) as unknown as typeof fetch;
 const tagMap = (tags: Tag[]) => Object.fromEntries(tags.map((t) => [t.name, t.value]));
 
-describe('createReference (init, §3)', () => {
+describe('createReference (init)', () => {
 	it('mints an init with no reference-id; the data-item id is the reference id', async () => {
 		const s = stub();
 		const client = new ReferenceClient({ fetch: noFetch, signer: s.signer });
@@ -35,41 +35,15 @@ describe('createReference (init, §3)', () => {
 	});
 });
 
-describe('setReference (set, §3/§4)', () => {
-	it('builds a set carrying the reference-id and new value', async () => {
+describe('updateReference', () => {
+	it('builds a set carrying the reference-id and the new value', async () => {
 		const s = stub();
 		const client = new ReferenceClient({ fetch: noFetch, signer: s.signer });
-		expect((await client.setReference('R', { value: 'NEW' })).id).toBe('id-1');
+		expect((await client.updateReference('R', { value: 'NEW' })).id).toBe('id-1');
 		const m = tagMap(s.sends[0]!.tags);
 		expect(m.device).toBe('reference@1.0');
 		expect(m['reference-id']).toBe('R');
 		expect(m['reference-value']).toBe('NEW');
-	});
-});
-
-describe('registerName (§9)', () => {
-	it('mints a downstream reference and returns its pointer', async () => {
-		const s = stub();
-		const client = new ReferenceClient({ fetch: noFetch, signer: s.signer });
-		const r = await client.registerName('alice', { value: 'TARGET' });
-		expect(r).toEqual({ name: 'alice', referenceId: 'id-1', pointer: { device: 'reference@1.0', 'reference-id': 'id-1' } });
-	});
-});
-
-describe('updateDirectory (operator, §9)', () => {
-	it('uploads a manifest then points the namespace reference at it', async () => {
-		const s = stub();
-		const client = new ReferenceClient({ fetch: noFetch, signer: s.signer, namespace: 'NS' });
-		const { manifestId, setId } = await client.updateDirectory({ alice: { id: 'T_a' } });
-		expect(manifestId).toBe('id-1');
-		expect(setId).toBe('id-2');
-		const manifestTags = tagMap(s.sends[0]!.tags);
-		expect(manifestTags.device).toBe('manifest@1.0');
-		expect(manifestTags['content-type']).toContain('arweave-manifest');
-		expect(JSON.parse(s.sends[0]!.data!).paths).toEqual({ alice: { id: 'T_a' } });
-		const setTags = tagMap(s.sends[1]!.tags);
-		expect(setTags['reference-id']).toBe('NS');
-		expect(setTags['reference-value']).toBe('id-1');
 	});
 });
 

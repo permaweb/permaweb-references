@@ -1,48 +1,76 @@
 # @permaweb/names
 
-A trustless JS client for the `reference@1.0` AO-Core device: resolve and manage
-permaweb names from any frontend, no trusted scheduler. Lives inside the
-permaweb-names repo and is its first consumer. (Package name is a placeholder,
-rename before publishing.)
+A developer utility for the `reference@1.0` AO-Core device. Read a reference's
+current value from any Arweave gateway, and update a reference by posting a normal
+Arweave tx to a bundler. Framework-agnostic TypeScript, no Turbo dependency.
 
-## Status
+## Read (GraphQL, any gateway)
 
-**Phase 1 (this commit): pure core, no network or wallet.**
+```ts
+import { ReferenceClient } from '@permaweb/names';
 
-- `messages` — `buildInit` / `buildSet` / `buildPointer` (§3, §9)
-- `identity` — `isInit`, `authorityOf`, `referenceIdOf` (§2)
-- `compute` — `currentState` (the §4 validity/ordering fold), `effectiveValue` (§3), `resolveValue`
+const refs = new ReferenceClient(); // defaults to arweave.net; pass { gateway } for any other
 
-Conformance tests are ported from the Erlang `dev_reference` EUnit suite
-(init-only, latest-set, stale-set-ignored, wrong-authority-ignored, tie-break by
-data-layer position, reference-set directory update).
+// current value of a reference
+await refs.resolveReference(referenceId);   // -> the value
 
-## Planned
+// full state
+await refs.getReference(referenceId);
+// -> { id, authority, value, timestamp, source: 'init' | 'set' } | undefined
+```
 
-- `discovery` — GraphQL set discovery (§8)
-- `ReferenceClient` — trustless resolve + `list` / `lookup` / `namesByOwner` (§5, §9)
-- `verify` — opt-in client-side commitment verification via a `verify` flag (§4, §10);
-  off by default (the gateway is the trusted, decentralizing layer)
-- write path — signer (`window.arweaveWallet` / JWK) + `createReference` / `setReference` / `registerName`
-- React adapter — `useName`, `useList`, `useNamesByOwner`, `useSetReference`
+Reads are **stateless**: the client computes the current value from the reference's
+`init` plus its updates, freshly each call. Caching/dedup/freshness are the
+caller's concern (React Query/SWR on the frontend; the gateway/CDN and node on the
+backend).
+
+## Update (Arweave tx -> bundler)
+
+```ts
+import { ReferenceClient, fromWallet, fromJwk } from '@permaweb/names';
+
+const refs = new ReferenceClient({
+  signer: fromWallet(window.arweaveWallet),  // or fromJwk(jwk)
+  // bundler defaults to https://up.arweave.net; override with your own
+});
+
+// create a new reference (its id is returned)
+const { referenceId } = await refs.createReference({ value: targetId });
+
+// update an existing reference (the signer must be its authority)
+await refs.updateReference(referenceId, { value: newTargetId });
+```
+
+The signer builds a normal Arweave data item and POSTs it to the bundler. No Turbo
+SDK; `arweave`/`arbundles` are lazy-loaded optional peers, so read-only use pulls
+no crypto deps.
+
+## Config
+
+| option | default | purpose |
+|--------|---------|---------|
+| `gateway` | `https://arweave.net` | tx + GraphQL base (any gateway) |
+| `graphql` | `${gateway}/graphql` | GraphQL endpoint |
+| `bundler` | `https://up.arweave.net` | where updates are POSTed |
+| `signer` | — | required only for updates |
+| `fetch` | global | inject for node/tests |
+
+## Low-level exports
+
+The pure pieces are exported too: `buildInit` / `buildSet` (message builders),
+`currentState` / `effectiveValue` (the §4 validity fold), `discoverSets`,
+`fetchMessageById`, and the `Signer` interface.
 
 ## Develop
 
 ```bash
-cd packages/names
 npm install
-npm test
+npm test        # vitest; the §4 fold vectors are ported from the dev_reference EUnit suite
+npm run build   # tsc -> dist (ESM)
 ```
 
-## Phase-1 usage
+## Not yet (step 3)
 
-```ts
-import { buildSet, currentState, effectiveValue } from '@permaweb/names';
-
-// build a set message to dispatch (signing/dispatch lands with the signer)
-const { tags } = buildSet({ referenceId, value: targetId, timestamp: Date.now() });
-
-// compute a reference's current value locally from discovered sets
-const state = currentState({ init, authority, candidates });
-const value = effectiveValue(state.message);
-```
+Name-level helpers, resolving a *name* and **listing names with their current
+references**, depend on the namespace model and are deferred. The reference-level
+read + update here is the foundation they build on.
