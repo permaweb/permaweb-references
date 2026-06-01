@@ -24,6 +24,18 @@ Reads are **stateless**: the client computes the current value from the referenc
 caller's concern (React Query/SWR on the frontend; the gateway/CDN and node on the
 backend).
 
+## Find references owned by a wallet
+
+```ts
+await refs.findReferences(walletAddress);
+// -> [{ referenceId, name, value, nameSource?, dateRegistered? }]
+```
+
+Finds the `reference@1.0` references whose `authority` is that wallet (a GraphQL
+query on the `authority` tag). `name` is pulled from the fixed namespace snapshot
+(reverse `reference-id -> name`) and is `null` for references not in it. Point at a
+different snapshot via `namespace`, or pass `namespace: null` to skip name lookup.
+
 ## Update (Arweave tx -> bundler)
 
 ```ts

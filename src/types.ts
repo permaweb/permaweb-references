@@ -39,3 +39,14 @@ export interface ResolvedReference {
 	timestamp: number;
 	source: 'init' | 'set';
 }
+
+/** A reference controlled by a wallet, as returned by `findReferences`. */
+export interface OwnedReference {
+	referenceId: string;
+	/** Human name from the namespace, or null if the reference is not in it. */
+	name: string | null;
+	/** The reference's recorded value (its `reference-value`); resolve for the latest if it has updates. */
+	value: unknown;
+	nameSource?: string;
+	dateRegistered?: string;
+}

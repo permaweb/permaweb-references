@@ -3,5 +3,6 @@ export * from './messages.js';
 export * from './identity.js';
 export * from './compute.js';
 export * from './discovery.js';
+export * from './namespace.js';
 export * from './signer.js';
 export * from './client.js';

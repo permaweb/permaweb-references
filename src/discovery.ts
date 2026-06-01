@@ -120,37 +120,47 @@ export async function fetchMessageById(args: { endpoint: string; fetch: typeof f
 	};
 }
 
-export function buildOwnerInitsQuery(args: { owner: Address; first?: number; after?: string }): string {
-	const { owner, first = 100, after } = args;
+export interface DiscoveredReference {
+	id: string;
+	message: ReferenceMessage;
+	owner?: Address;
+}
+
+/** Find references controlled by `authority`: reference@1.0 inits carrying that authority tag. */
+export function buildAuthorityQuery(args: { authority: Address; first?: number; after?: string }): string {
+	const { authority, first = 100, after } = args;
 	const afterArg = after ? `, after: ${JSON.stringify(after)}` : '';
 	return `query {
   transactions(
-    owners: ${JSON.stringify([owner])},
-    tags: [ { name: "device", values: ${JSON.stringify([DEVICE])} } ],
-    sort: HEIGHT_ASC,
+    tags: [
+      { name: "device", values: ${JSON.stringify([DEVICE])} },
+      { name: "authority", values: ${JSON.stringify([authority])} }
+    ],
+    sort: HEIGHT_DESC,
     first: ${first}${afterArg}
-  ) { pageInfo { hasNextPage } edges { cursor node { id tags { name value } } } }
+  ) { pageInfo { hasNextPage } edges { cursor node { id owner { address } tags { name value } } } }
 }`;
 }
 
 /**
- * Reference ids the `owner` authored as `init`s (a reference@1.0 message with no
- * `reference-id` tag). Used to find which directory names map to references the
- * owner controls (the per-name-reference / scenario-2 model).
+ * References a wallet controls: `reference@1.0` `init`s whose `authority` tag is
+ * `authority`. (Sets carry `reference-id` and are skipped; only the references
+ * themselves are returned.)
  */
-export async function discoverInitsByOwner(args: { endpoint: string; fetch: typeof fetch; owner: Address; maxPages?: number }): Promise<string[]> {
-	const { endpoint, fetch: f, owner, maxPages = 20 } = args;
-	const ids: string[] = [];
+export async function discoverReferencesByAuthority(args: { endpoint: string; fetch: typeof fetch; authority: Address; maxPages?: number }): Promise<DiscoveredReference[]> {
+	const { endpoint, fetch: f, authority, maxPages = 20 } = args;
+	const out: DiscoveredReference[] = [];
 	let after: string | undefined;
 	for (let page = 0; page < maxPages; page++) {
-		const data = await gqlRequest(endpoint, buildOwnerInitsQuery({ owner, after }), f);
+		const data = await gqlRequest(endpoint, buildAuthorityQuery({ authority, after }), f);
 		const edges: { cursor: string; node: GqlNode }[] = data?.transactions?.edges ?? [];
 		for (const e of edges) {
 			const tags = e.node.tags ?? [];
-			if (!tags.some((t) => t.name === 'reference-id')) ids.push(e.node.id);
+			if (tags.some((t) => t.name === 'reference-id')) continue; // a set, not a reference
+			out.push({ id: e.node.id, message: tagsToMessage(tags), owner: e.node.owner?.address });
 			after = e.cursor;
 		}
 		if (edges.length === 0 || !data?.transactions?.pageInfo?.hasNextPage) break;
 	}
-	return ids;
+	return out;
 }

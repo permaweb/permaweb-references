@@ -1,9 +1,13 @@
-import type { Address, ResolvedReference } from './types.js';
+import type { Address, OwnedReference, ResolvedReference } from './types.js';
 import { authorityOf } from './identity.js';
 import { currentState, effectiveValue } from './compute.js';
 import { buildInit, buildSet } from './messages.js';
-import { discoverSets, fetchMessageById } from './discovery.js';
+import { discoverSets, discoverReferencesByAuthority, fetchMessageById } from './discovery.js';
+import { parseNamespace, type Namespace } from './namespace.js';
 import type { Signer } from './signer.js';
+
+/** The fixed phase-2 namespace snapshot (name -> reference-id). Override via config. */
+export const PHASE2_NAMESPACE = 'XXXxow5fKGd-AgsrT6bX74trkerRUVbRtJUPYd7nK3U';
 
 export interface ReferenceClientConfig {
 	/** Tx + GraphQL base. Default https://arweave.net; use any gateway you like. */
@@ -11,9 +15,11 @@ export interface ReferenceClientConfig {
 	/** GraphQL endpoint. Default `${gateway}/graphql`. */
 	graphql?: string;
 	/** Bundler for the update path (plain POST of a signed data item). Default
-	 *  https://up.arweave.net. No Turbo SDK; set your own (e.g. a HyperBEAM
-	 *  bundler at /~bundler@1.0/tx) to override. */
+	 *  https://up.arweave.net. No Turbo SDK; set your own to override. */
 	bundler?: string;
+	/** Namespace manifest id (name <-> reference-id), used to attach names in
+	 *  `findReferences`. Defaults to the fixed phase-2 snapshot; set null to skip. */
+	namespace?: string | null;
 	/** Signer for the update path (fromWallet / fromJwk). Required only for writes. */
 	signer?: Signer;
 	/** fetch implementation; defaults to the global. Pass one where there is none. */
@@ -27,20 +33,23 @@ const DEFAULTS = {
 
 /**
  * Developer utility for `reference@1.0`. Reads resolve a reference's current value
- * from GraphQL on any gateway (stateless: caching/freshness are the caller's
- * concern). Updates build a normal Arweave tx and POST it to a bundler.
+ * from GraphQL on any gateway (stateless). Updates build a normal Arweave tx and
+ * POST it to a bundler. `findReferences` lists the references a wallet controls.
  */
 export class ReferenceClient {
 	readonly gateway: string;
 	readonly graphql: string;
 	readonly bundler: string;
+	readonly namespace: string | null;
 	readonly signer?: Signer;
 	private readonly fetchImpl: typeof fetch;
+	private namespaceMemo?: Promise<Namespace>;
 
 	constructor(config: ReferenceClientConfig = {}) {
 		this.gateway = (config.gateway ?? DEFAULTS.gateway).replace(/\/+$/, '');
 		this.graphql = config.graphql ?? `${this.gateway}/graphql`;
 		this.bundler = (config.bundler ?? DEFAULTS.bundler).replace(/\/+$/, '');
+		this.namespace = config.namespace === undefined ? PHASE2_NAMESPACE : config.namespace;
 		this.signer = config.signer;
 		const f = config.fetch ?? (globalThis.fetch as typeof fetch | undefined);
 		if (!f) throw new Error('No fetch available; pass { fetch } in environments without a global fetch');
@@ -70,6 +79,37 @@ export class ReferenceClient {
 		const ref = await this.getReference(referenceId);
 		if (!ref) throw new Error(`reference not found: ${referenceId}`);
 		return ref.value;
+	}
+
+	/**
+	 * The references a wallet controls (its `authority`), via GraphQL. Each carries
+	 * its name pulled from the namespace (null if the reference is not in it), its
+	 * recorded value, and `name-source` / `date-registered` metadata when present.
+	 */
+	async findReferences(authority: Address): Promise<OwnedReference[]> {
+		const refs = await discoverReferencesByAuthority({ endpoint: this.graphql, fetch: this.fetchImpl, authority });
+		const ns = await this.loadNamespace();
+		return refs.map((r) => ({
+			referenceId: r.id,
+			name: ns?.byReference[r.id] ?? null,
+			value: r.message['reference-value'],
+			nameSource: typeof r.message['name-source'] === 'string' ? r.message['name-source'] : undefined,
+			dateRegistered: typeof r.message['date-registered'] === 'string' ? r.message['date-registered'] : undefined,
+		}));
+	}
+
+	/** Fetch a raw document by id via /raw/ (so a manifest is returned, not resolved). */
+	async fetchRaw(id: string): Promise<string> {
+		const res = await this.fetchImpl(`${this.gateway}/raw/${id}`, { headers: { accept: 'application/json' } });
+		if (!res.ok) throw new Error(`raw fetch failed: ${res.status} for ${id}`);
+		return res.text();
+	}
+
+	/** Fetch + index the namespace (immutable snapshot), memoized. Undefined if disabled. */
+	private loadNamespace(): Promise<Namespace> | undefined {
+		if (!this.namespace) return undefined;
+		if (!this.namespaceMemo) this.namespaceMemo = this.fetchRaw(this.namespace).then(parseNamespace);
+		return this.namespaceMemo;
 	}
 
 	// --- update (Arweave tx -> bundler) ---
