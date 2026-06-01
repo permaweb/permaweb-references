@@ -204,3 +204,5 @@ npm run typecheck
 npm test
 npm run build
 ```
+## License
+This repository is license under the [MIT License](./LICENSE)
