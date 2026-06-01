@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { buildSetQuery, buildTxQuery, tagsToMessage, nodeToCandidate, discoverSets } from '../src/discovery';
+import {
+	buildAuthorityInitsQuery,
+	buildSetQuery,
+	buildTxQuery,
+	tagsToMessage,
+	nodeToCandidate,
+	discoverReferencesByAuthority,
+	discoverSets,
+	PHASE2_BOOTSTRAP_OWNER,
+} from '../src/discovery';
 import type { GqlNode } from '../src/discovery';
 
 const node = (id: string, owner: string, tags: Record<string, string>, block?: number): GqlNode => ({
@@ -29,6 +38,16 @@ describe('buildSetQuery / §8', () => {
 		const q = buildSetQuery({ referenceId: 'a" b', authority: 'x"y' });
 		expect(q).toContain('["a\\" b"]');
 		expect(q).toContain('["x\\"y"]');
+	});
+});
+
+describe('buildAuthorityInitsQuery', () => {
+	it('finds bootstrap inits by explicit authority tag', () => {
+		const q = buildAuthorityInitsQuery({ authority: 'AUTH' });
+		expect(q).toContain('"device"');
+		expect(q).toContain('reference@1.0');
+		expect(q).toContain('"authority"');
+		expect(q).toContain('"AUTH"');
 	});
 });
 
@@ -63,8 +82,14 @@ describe('tagsToMessage / nodeToCandidate', () => {
 describe('discoverSets pagination', () => {
 	it('walks every page and assigns a running index', async () => {
 		const pages = [
-			{ hasNextPage: true, edges: [{ cursor: 'c0', node: node('a', 'O', {}, 1) }, { cursor: 'c1', node: node('b', 'O', {}, 2) }] },
-			{ hasNextPage: false, edges: [{ cursor: 'c2', node: node('c', 'O', {}, 3) }] },
+			{
+				hasNextPage: true,
+				edges: [
+					{ cursor: 'c0', node: node('a', 'O', { device: 'reference@1.0', 'reference-id': 'R' }, 1) },
+					{ cursor: 'c1', node: node('b', 'O', { device: 'reference@1.0', 'reference-id': 'R' }, 2) },
+				],
+			},
+			{ hasNextPage: false, edges: [{ cursor: 'c2', node: node('c', 'O', { device: 'reference@1.0', 'reference-id': 'R' }, 3) }] },
 		];
 		let call = 0;
 		const fetchImpl = (async () => {
@@ -80,5 +105,52 @@ describe('discoverSets pagination', () => {
 		expect(call).toBe(2);
 		expect(out.map((c) => c.id)).toEqual(['a', 'b', 'c']);
 		expect(out.map((c) => c.position.index)).toEqual([0, 1, 2]);
+	});
+
+	it('re-checks device and reference-id locally instead of trusting gql filters', async () => {
+		const edges = [
+			{ cursor: 'c0', node: node('wrong-ref', 'O', { device: 'reference@1.0', 'reference-id': 'OTHER' }, 1) },
+			{ cursor: 'c1', node: node('wrong-device', 'O', { device: 'other@1.0', 'reference-id': 'R' }, 2) },
+			{ cursor: 'c2', node: node('ok', 'O', { device: 'reference@1.0', 'reference-id': 'R' }, 3) },
+		];
+		const fetchImpl = (async () =>
+			new Response(JSON.stringify({ data: { transactions: { pageInfo: { hasNextPage: false }, edges } } }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			})) as unknown as typeof fetch;
+
+		const out = await discoverSets({ endpoint: 'https://gw/graphql', fetch: fetchImpl, referenceId: 'R', authority: 'O' });
+		expect(out.map((c) => c.id)).toEqual(['ok']);
+	});
+});
+
+describe('discoverReferencesByAuthority', () => {
+	it('finds bootstrap-published and user-published refs with matching authority tags', async () => {
+		const ownerSigned = node('owned-init', 'AUTH', { device: 'reference@1.0', authority: 'AUTH' }, 1);
+		const bootstrapSigned = node('bootstrap-init', PHASE2_BOOTSTRAP_OWNER, { device: 'reference@1.0', authority: 'AUTH' }, 2);
+		const setByAuth = node('not-init', 'AUTH', { device: 'reference@1.0', 'reference-id': 'R' }, 3);
+		const otherAuthority = node('other-auth', PHASE2_BOOTSTRAP_OWNER, { device: 'reference@1.0', authority: 'OTHER' }, 4);
+		const unexpectedPublisher = node('unexpected-publisher', 'EVIL', { device: 'reference@1.0', authority: 'AUTH' }, 5);
+		const missingAuthority = node('missing-authority', 'AUTH', { device: 'reference@1.0' }, 6);
+
+		const fetchImpl = (async (_url: string, init?: RequestInit) => {
+			return new Response(
+				JSON.stringify({
+					data: {
+						transactions: {
+							pageInfo: { hasNextPage: false },
+							edges: [bootstrapSigned, ownerSigned, setByAuth, otherAuthority, unexpectedPublisher, missingAuthority].map((n, i) => ({
+								cursor: `c${i}`,
+								node: n,
+							})),
+						},
+					},
+				}),
+				{ status: 200, headers: { 'content-type': 'application/json' } },
+			);
+		}) as unknown as typeof fetch;
+
+		const refs = await discoverReferencesByAuthority({ endpoint: 'https://gw/graphql', fetch: fetchImpl, authority: 'AUTH' });
+		expect(refs.map((r) => r.id).sort()).toEqual(['bootstrap-init', 'owned-init']);
 	});
 });

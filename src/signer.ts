@@ -1,12 +1,19 @@
 import type { Tag } from './types.js';
 
+export interface SendOptions {
+	bundler?: string;
+	fetch?: typeof fetch;
+}
+
 /** Signs and uploads committed reference messages. */
 export interface Signer {
 	/** The signer's address (becomes the authority for `init`s). */
 	address(): Promise<string>;
 	/** Sign + upload a committed message; returns the resulting data-item id. */
-	send(message: { tags: Tag[]; data?: string }): Promise<{ id: string }>;
+	send(message: { tags: Tag[]; data?: string }, opts?: SendOptions): Promise<{ id: string }>;
 }
+
+const DEFAULT_BUNDLER = 'https://up.arweave.net';
 
 // Lazy-load optional peers so read-only consumers never need them, and tsc does
 // not require their types (variable specifier => not statically resolved).
@@ -44,26 +51,31 @@ export function fromWallet(wallet: any, opts: { host?: string } = {}): Signer {
 	};
 }
 
+function txEndpoint(bundler: string): string {
+	const base = bundler.replace(/\/+$/, '');
+	return base.endsWith('/tx') ? base : `${base}/tx`;
+}
+
 /**
  * JWK signer: signs an ANS-104 data item and POSTs it to the bundler (no Turbo
  * SDK). Default bundler is set by the client; override per deployment. Needs
  * `arbundles` available.
  */
-export function fromJwk(jwk: any, opts: { bundler: string; fetch?: typeof fetch; host?: string }): Signer {
+export function fromJwk(jwk: any, opts: { bundler?: string; fetch?: typeof fetch; host?: string } = {}): Signer {
 	const host = opts.host ?? 'arweave.net';
 	return {
 		async address() {
 			const Arweave = await loadDefault('arweave');
 			return Arweave.init({ host, port: 443, protocol: 'https' }).wallets.jwkToAddress(jwk);
 		},
-		async send({ tags, data }) {
+		async send({ tags, data }, sendOpts = {}) {
 			const arbundles = await loadModule('arbundles');
 			const signer = new arbundles.ArweaveSigner(jwk);
 			const item = arbundles.createData(data ?? '', signer, { tags });
 			await item.sign(signer);
-			const f = opts.fetch ?? (globalThis.fetch as typeof fetch | undefined);
+			const f = sendOpts.fetch ?? opts.fetch ?? (globalThis.fetch as typeof fetch | undefined);
 			if (!f) throw new Error('No fetch available for bundler upload');
-			const res = await f(`${opts.bundler.replace(/\/+$/, '')}/tx`, {
+			const res = await f(txEndpoint(sendOpts.bundler ?? opts.bundler ?? DEFAULT_BUNDLER), {
 				method: 'POST',
 				headers: { 'content-type': 'application/octet-stream' },
 				body: item.getRaw(),

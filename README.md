@@ -1,88 +1,208 @@
 # @permaweb/names
 
-A developer utility for the `reference@1.0` AO-Core device. Read a reference's
-current value from any Arweave gateway, and update a reference by posting a normal
-Arweave tx to a bundler. Framework-agnostic TypeScript, no Turbo dependency.
+TypeScript SDK for Permaweb Names references.
 
-## Read (GraphQL, any gateway)
+The SDK reads `reference@1.0` records from Arweave GraphQL, joins them with the
+current phase-2 namespace snapshot, and can post reference updates through an
+Arweave bundler. It is framework agnostic and has no Turbo dependency.
+
+## Install
+
+```bash
+npm install @permaweb/names
+```
+
+Read-only usage does not need wallet dependencies. Writing with the built-in
+signers needs the optional peer packages used by that signer:
+
+```bash
+npm install arweave arbundles
+```
+
+## Quick Start
 
 ```ts
 import { ReferenceClient } from '@permaweb/names';
 
-const refs = new ReferenceClient(); // defaults to arweave.net; pass { gateway } for any other
+const names = new ReferenceClient();
 
-// current value of a reference
-await refs.resolveReference(referenceId);   // -> the value
+const refs = await names.findReferences(
+  '8s8ABYc_1oDZ553UKXLIzsUie48xc6V88Q1hPtky4C8',
+);
 
-// full state
-await refs.getReference(referenceId);
-// -> { id, authority, value, timestamp, source: 'init' | 'set' } | undefined
+console.log(refs);
+// [
+//   {
+//     referenceId: '_aY3NpheRlJ4y_MInEZpzCSBHXl1hL3osyfkOSQY6Ek',
+//     name: '1984',
+//     value: 'n2ITIV8xMI2JeeABVsyUyYK0jaOSSJwu9ekxioXGbeA'
+//   }
+// ]
 ```
 
-Reads are **stateless**: the client computes the current value from the reference's
-`init` plus its updates, freshly each call. Caching/dedup/freshness are the
-caller's concern (React Query/SWR on the frontend; the gateway/CDN and node on the
-backend).
+## Read References
 
-## Find references owned by a wallet
+Resolve the current value of a reference:
 
 ```ts
-await refs.findReferences(walletAddress);
-// -> [{ referenceId, name, value, nameSource?, dateRegistered? }]
+const value = await names.resolveReference(referenceId);
 ```
 
-Finds the `reference@1.0` references whose `authority` is that wallet (a GraphQL
-query on the `authority` tag). `name` is pulled from the fixed namespace snapshot
-(reverse `reference-id -> name`) and is `null` for references not in it. Point at a
-different snapshot via `namespace`, or pass `namespace: null` to skip name lookup.
-
-## Update (Arweave tx -> bundler)
+Fetch full reference state:
 
 ```ts
-import { ReferenceClient, fromWallet, fromJwk } from '@permaweb/names';
+const ref = await names.getReference(referenceId);
 
-const refs = new ReferenceClient({
-  signer: fromWallet(window.arweaveWallet),  // or fromJwk(jwk)
-  // bundler defaults to https://up.arweave.net; override with your own
+// {
+//   id: string,
+//   authority?: string,
+//   value: unknown,
+//   timestamp: number,
+//   source: 'init' | 'set'
+// }
+```
+
+List references controlled by a wallet:
+
+```ts
+const refs = await names.findReferences(authorityAddress);
+
+// [
+//   {
+//     referenceId: string,
+//     name: string | null,
+//     value: unknown,
+//     nameSource?: string,
+//     dateRegistered?: string
+//   }
+// ]
+```
+
+`findReferences` returns references controlled by an authority. It is not an
+"all names" or "all subdomains" listing API. All-name discovery should read the
+namespace manifest/state directly.
+
+## Update References
+
+### Browser Wallet
+
+```ts
+import { ReferenceClient, fromWallet } from '@permaweb/names';
+
+const names = new ReferenceClient({
+  signer: fromWallet(window.arweaveWallet),
 });
 
-// create a new reference (its id is returned)
-const { referenceId } = await refs.createReference({ value: targetId });
-
-// update an existing reference (the signer must be its authority)
-await refs.updateReference(referenceId, { value: newTargetId });
+await names.updateReference(referenceId, {
+  value: 'NEW_TARGET_TX_ID',
+});
 ```
 
-The signer builds a normal Arweave data item and POSTs it to the bundler. No Turbo
-SDK; `arweave`/`arbundles` are lazy-loaded optional peers, so read-only use pulls
-no crypto deps.
+### JWK
 
-## Config
+```ts
+import { ReferenceClient, fromJwk } from '@permaweb/names';
 
-| option | default | purpose |
-|--------|---------|---------|
-| `gateway` | `https://arweave.net` | tx + GraphQL base (any gateway) |
-| `graphql` | `${gateway}/graphql` | GraphQL endpoint |
-| `bundler` | `https://up.arweave.net` | where updates are POSTed |
-| `signer` | — | required only for updates |
-| `fetch` | global | inject for node/tests |
+const names = new ReferenceClient({
+  signer: fromJwk(jwk),
+  bundler: 'https://up.arweave.net',
+});
 
-## Low-level exports
+await names.updateReference(referenceId, {
+  value: 'NEW_TARGET_TX_ID',
+});
+```
 
-The pure pieces are exported too: `buildInit` / `buildSet` (message builders),
-`currentState` / `effectiveValue` (the §4 validity fold), `discoverSets`,
-`fetchMessageById`, and the `Signer` interface.
+The signer must be the reference authority.
 
-## Develop
+## Create References
+
+```ts
+const { referenceId } = await names.createReference({
+  authority: authorityAddress,
+  value: targetTxId,
+});
+```
+
+For user-created references, set `authority` to the controlling wallet address.
+The resulting data item ID is the reference ID.
+
+## Configuration
+
+```ts
+const names = new ReferenceClient({
+  gateway: 'https://arweave.net',
+  graphql: 'https://arweave.net/graphql',
+  bundler: 'https://up.arweave.net',
+  namespace: 'DmNd29cxXHDWuuSfVqCLJ8vKz8D0abctrADPPe0Vn60',
+  trustedPublishers: [
+    'gj49Uq4Hxwv-1IcJjrXT1OZaWkfPtqyqbdqadExs9mQ',
+  ],
+  fetch,
+});
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `gateway` | `https://arweave.net` | Gateway used for tx reads and raw namespace fetches. |
+| `graphql` | `${gateway}/graphql` | GraphQL endpoint used for reference discovery. |
+| `bundler` | `https://up.arweave.net` | Bundler endpoint used by the JWK signer. |
+| `namespace` | phase-2 namespace snapshot | Namespace manifest used to attach names to references. Set `null` to skip name lookup. |
+| `trustedPublishers` | phase-2 bootstrap publisher | Publishers accepted for authority-tagged bootstrap reference inits. |
+| `signer` | none | Required only for create/update operations. |
+| `fetch` | global `fetch` | Custom fetch implementation for runtimes or tests. |
+
+## Phase-2 Trust Model
+
+Phase-2 references are bootstrap-published, but user-controlled:
+
+```txt
+owner.address = trusted bootstrap publisher
+authority tag = user wallet
+```
+
+By default, the trusted bootstrap publisher is:
+
+```txt
+gj49Uq4Hxwv-1IcJjrXT1OZaWkfPtqyqbdqadExs9mQ
+```
+
+`findReferences(authority)` accepts a reference init when:
+
+```txt
+authority tag == requested authority
+AND
+owner.address is either:
+  - a trusted bootstrap publisher, or
+  - the requested authority
+```
+
+This supports the current phase-2 bootstrap and future direct user-published
+references while rejecting authority-tagged references from unknown publishers.
+
+## Low-Level Exports
+
+The package also exports the pure pieces used by `ReferenceClient`:
+
+```ts
+import {
+  buildInit,
+  buildSet,
+  currentState,
+  effectiveValue,
+  discoverSets,
+  discoverReferencesByAuthority,
+  fetchMessageById,
+} from '@permaweb/names';
+```
+
+## Development
 
 ```bash
 npm install
-npm test        # vitest; the §4 fold vectors are ported from the dev_reference EUnit suite
-npm run build   # tsc -> dist (ESM)
+npm run typecheck
+npm test
+npm run build
 ```
-
-## Not yet (step 3)
-
-Name-level helpers, resolving a *name* and **listing names with their current
-references**, depend on the namespace model and are deferred. The reference-level
-read + update here is the foundation they build on.
+## License
+This repository is license under the [MIT License](./LICENSE)

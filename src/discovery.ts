@@ -1,5 +1,8 @@
 import type { Address, Candidate, ReferenceMessage } from './types.js';
+import { isInit } from './identity.js';
 import { DEVICE } from './messages.js';
+
+export const PHASE2_BOOTSTRAP_OWNER = 'gj49Uq4Hxwv-1IcJjrXT1OZaWkfPtqyqbdqadExs9mQ';
 
 export interface GqlNode {
 	id: string;
@@ -95,8 +98,11 @@ export async function discoverSets(args: DiscoverArgs): Promise<Candidate[]> {
 		const data = await gqlRequest(endpoint, buildSetQuery({ referenceId, authority, minBlock, after }), f);
 		const edges: { cursor: string; node: GqlNode }[] = data?.transactions?.edges ?? [];
 		for (const e of edges) {
-			out.push(nodeToCandidate(e.node, index++));
 			after = e.cursor;
+			const candidate = nodeToCandidate(e.node, index++);
+			if (candidate.message.device !== DEVICE) continue;
+			if (candidate.message['reference-id'] !== referenceId) continue;
+			out.push(candidate);
 		}
 		if (edges.length === 0 || !data?.transactions?.pageInfo?.hasNextPage) break;
 	}
@@ -126,8 +132,8 @@ export interface DiscoveredReference {
 	owner?: Address;
 }
 
-/** Find references controlled by `authority`: reference@1.0 inits carrying that authority tag. */
-export function buildAuthorityQuery(args: { authority: Address; first?: number; after?: string }): string {
+/** Find bootstrap inits that explicitly carry `authority=<authority>`. */
+export function buildAuthorityInitsQuery(args: { authority: Address; first?: number; after?: string }): string {
 	const { authority, first = 100, after } = args;
 	const afterArg = after ? `, after: ${JSON.stringify(after)}` : '';
 	return `query {
@@ -142,25 +148,84 @@ export function buildAuthorityQuery(args: { authority: Address; first?: number; 
 }`;
 }
 
+/** @deprecated Use buildAuthorityInitsQuery. */
+export function buildAuthorityQuery(args: { authority: Address; first?: number; after?: string }): string {
+	return buildAuthorityInitsQuery(args);
+}
+
 /**
- * References a wallet controls: `reference@1.0` `init`s whose `authority` tag is
- * `authority`. (Sets carry `reference-id` and are skipped; only the references
- * themselves are returned.)
+ * References a wallet controls. Valid phase-2 refs must carry
+ * `authority=<wallet>` and be published by either:
+ *
+ * - the phase-2 bootstrap publisher; or
+ * - the authority itself, for future user-created refs.
+ *
+ * GQL is discovery only. Each candidate is reconstructed and kept only when it
+ * is a true reference init whose authority tag and publisher match.
  */
-export async function discoverReferencesByAuthority(args: { endpoint: string; fetch: typeof fetch; authority: Address; maxPages?: number }): Promise<DiscoveredReference[]> {
-	const { endpoint, fetch: f, authority, maxPages = 20 } = args;
-	const out: DiscoveredReference[] = [];
+export async function discoverReferencesByAuthority(args: {
+	endpoint: string;
+	fetch: typeof fetch;
+	authority: Address;
+	maxPages?: number;
+	trustedPublishers?: Address[];
+}): Promise<DiscoveredReference[]> {
+	const { endpoint, fetch: f, authority, maxPages = 20, trustedPublishers = [PHASE2_BOOTSTRAP_OWNER] } = args;
+	const refs = new Map<string, DiscoveredReference>();
+
+	await collectReferenceInits({
+		endpoint,
+		fetch: f,
+		buildQuery: (after?: string) => buildAuthorityInitsQuery({ authority, after }),
+		authority,
+		trustedPublishers,
+		refs,
+		maxPages,
+	});
+
+	return [...refs.values()];
+}
+
+/** @deprecated Use discoverReferencesByAuthority. */
+export async function discoverInitsByOwner(args: { endpoint: string; fetch: typeof fetch; owner: Address; maxPages?: number }): Promise<string[]> {
+	const refs = await discoverReferencesByAuthority({
+		endpoint: args.endpoint,
+		fetch: args.fetch,
+		authority: args.owner,
+		maxPages: args.maxPages,
+	});
+	return refs.map((ref) => ref.id);
+}
+
+async function collectReferenceInits(args: {
+	endpoint: string;
+	fetch: typeof fetch;
+	buildQuery: (after?: string) => string;
+	authority: Address;
+	trustedPublishers: Address[];
+	refs: Map<string, DiscoveredReference>;
+	maxPages: number;
+}): Promise<void> {
+	const { endpoint, fetch: f, buildQuery, authority, trustedPublishers, refs, maxPages } = args;
+	const allowedPublishers = new Set([authority, ...trustedPublishers]);
 	let after: string | undefined;
 	for (let page = 0; page < maxPages; page++) {
-		const data = await gqlRequest(endpoint, buildAuthorityQuery({ authority, after }), f);
+		const data = await gqlRequest(endpoint, buildQuery(after), f);
 		const edges: { cursor: string; node: GqlNode }[] = data?.transactions?.edges ?? [];
 		for (const e of edges) {
-			const tags = e.node.tags ?? [];
-			if (tags.some((t) => t.name === 'reference-id')) continue; // a set, not a reference
-			out.push({ id: e.node.id, message: tagsToMessage(tags), owner: e.node.owner?.address });
+			const message = tagsToMessage(e.node.tags);
+			const owner = e.node.owner?.address;
+			if (
+				message.device === DEVICE &&
+				isInit(message) &&
+				message.authority === authority &&
+				owner !== undefined &&
+				allowedPublishers.has(owner)
+			) {
+				refs.set(e.node.id, { id: e.node.id, message, owner });
+			}
 			after = e.cursor;
 		}
 		if (edges.length === 0 || !data?.transactions?.pageInfo?.hasNextPage) break;
 	}
-	return out;
 }
