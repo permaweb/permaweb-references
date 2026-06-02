@@ -6,8 +6,8 @@ import { discoverSets, discoverReferencesByAuthority, fetchMessageById, PHASE2_B
 import { parseNamespace, type Namespace } from './namespace.js';
 import type { Signer } from './signer.js';
 
-/** The fixed phase-2 namespace snapshot (name -> reference-id). Override via config. */
-export const PHASE2_NAMESPACE = 'NgWK2T4qon7zvNHMm_x0Ggu72wehg--J8Wjbk5Cas5M';
+/** The phase-2 namespace root reference. Override via config. */
+export const PHASE2_NAMESPACE = 'w0eqd43OMzzXr-5yhFC-LkgifQqih8YEPb4mLt6VSZo';
 
 export interface ReferenceClientConfig {
 	/** Tx + GraphQL base. Default https://arweave.net; use any gateway you like. */
@@ -17,8 +17,8 @@ export interface ReferenceClientConfig {
 	/** Bundler for the update path (plain POST of a signed data item). Default
 	 *  https://up.arweave.net. No Turbo SDK; set your own to override. */
 	bundler?: string;
-	/** Namespace manifest id (name <-> reference-id), used to attach names in
-	 *  `findReferences`. Defaults to the fixed phase-2 snapshot; set null to skip. */
+	/** Namespace root reference or manifest id, used to attach names in
+	 *  `findReferences`. Defaults to the phase-2 namespace root; set null to skip. */
 	namespace?: string | null;
 	/** Trusted bootstrap publishers for authority-tagged reference inits. */
 	trustedPublishers?: Address[];
@@ -115,11 +115,40 @@ export class ReferenceClient {
 		return res.text();
 	}
 
-	/** Fetch + index the namespace (immutable snapshot), memoized. Undefined if disabled. */
+	/** Resolve the namespace root reference, then fetch + index its manifest. */
 	private loadNamespace(): Promise<Namespace> | undefined {
 		if (!this.namespace) return undefined;
-		if (!this.namespaceMemo) this.namespaceMemo = this.fetchRaw(this.namespace).then(parseNamespace);
+		if (!this.namespaceMemo) {
+			this.namespaceMemo = (async () => {
+				const manifestId = await this.resolveNamespaceManifestId(this.namespace!);
+				return parseNamespace(await this.fetchRaw(manifestId));
+			})();
+		}
 		return this.namespaceMemo;
+	}
+
+	private async resolveNamespaceManifestId(namespace: string): Promise<string> {
+		const init = await fetchMessageById({ endpoint: this.graphql, fetch: this.fetchImpl, id: namespace });
+		if (!init || init.message.device !== DEVICE || !isInit(init.message)) return namespace;
+
+		const owner = init.committers[0];
+		const authority = authorityOf(init.message, init.committers);
+		if (owner !== PHASE2_BOOTSTRAP_OWNER || authority !== PHASE2_BOOTSTRAP_OWNER) {
+			throw new Error(`namespace root is not owned by trusted bootstrap publisher: ${namespace}`);
+		}
+
+		const candidates = await discoverSets({
+			endpoint: this.graphql,
+			fetch: this.fetchImpl,
+			referenceId: namespace,
+			authority: PHASE2_BOOTSTRAP_OWNER,
+		});
+		const state = currentState({ init: init.message, authority: PHASE2_BOOTSTRAP_OWNER, candidates });
+		const value = effectiveValue(state.message);
+		if (typeof value !== 'string') {
+			throw new Error(`namespace root does not resolve to a manifest id: ${namespace}`);
+		}
+		return value;
 	}
 
 	// --- update (Arweave tx -> bundler) ---
