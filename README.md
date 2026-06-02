@@ -3,7 +3,7 @@
 TypeScript SDK for Permaweb Names references.
 
 The SDK reads `reference@1.0` records from Arweave GraphQL, joins them with the
-current phase-2 namespace snapshot, and can post reference updates through an
+current phase-2 namespace root reference, and can post reference updates through an
 Arweave bundler. It is framework agnostic and has no Turbo dependency.
 
 ## Install
@@ -146,7 +146,7 @@ const names = new ReferenceClient({
   gateway: 'https://arweave.net',
   graphql: 'https://arweave.net/graphql',
   bundler: 'https://up.arweave.net',
-  namespace: 'NgWK2T4qon7zvNHMm_x0Ggu72wehg--J8Wjbk5Cas5M',
+  namespace: 'w0eqd43OMzzXr-5yhFC-LkgifQqih8YEPb4mLt6VSZo',
   trustedPublishers: [
     'uAaRGha_a1ni_VjLf9Be2SFB7NJw1PWnjevdfeuJ_7c',
   ],
@@ -159,7 +159,7 @@ const names = new ReferenceClient({
 | `gateway` | `https://arweave.net` | Gateway used for tx reads and raw namespace fetches. |
 | `graphql` | `${gateway}/graphql` | GraphQL endpoint used for reference discovery. |
 | `bundler` | `https://up.arweave.net` | Bundler endpoint used by the JWK signer. |
-| `namespace` | phase-2 namespace snapshot | Namespace manifest used to attach names to references. Set `null` to skip name lookup. |
+| `namespace` | phase-2 namespace root | Namespace root reference or manifest ID used to attach names to references. Set `null` to skip name lookup. |
 | `trustedPublishers` | phase-2 bootstrap publisher | Publishers accepted for authority-tagged bootstrap reference inits. |
 | `signer` | none | Required only for create/update operations. |
 | `fetch` | global `fetch` | Custom fetch implementation for runtimes or tests. |
