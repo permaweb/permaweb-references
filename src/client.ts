@@ -32,6 +32,7 @@ const DEFAULTS = {
 	gateway: 'https://arweave.net',
 	bundler: 'https://up.arweave.net',
 };
+const MAX_NAMESPACE_REFERENCE_DEPTH = 10;
 
 /**
  * Developer utility for `reference@1.0`. Reads resolve a reference's current value
@@ -128,25 +129,41 @@ export class ReferenceClient {
 	}
 
 	private async resolveNamespaceManifestId(namespace: string): Promise<string> {
-		const init = await fetchMessageById({ endpoint: this.graphql, fetch: this.fetchImpl, id: namespace });
-		if (!init || init.message.device !== DEVICE || !isInit(init.message)) return namespace;
+		let current = namespace;
+		const seen = new Set<string>();
+		for (let depth = 0; depth < MAX_NAMESPACE_REFERENCE_DEPTH; depth++) {
+			if (seen.has(current)) throw new Error(`namespace reference cycle detected: ${current}`);
+			seen.add(current);
+
+			const next = await this.resolveTrustedNamespaceReference(current, depth === 0);
+			if (!next) return current;
+			current = next;
+		}
+		throw new Error(`namespace reference chain is too deep: ${namespace}`);
+	}
+
+	private async resolveTrustedNamespaceReference(referenceId: string, isRoot: boolean): Promise<string | undefined> {
+		const init = await fetchMessageById({ endpoint: this.graphql, fetch: this.fetchImpl, id: referenceId });
+		if (!init || init.message.device !== DEVICE || !isInit(init.message)) return undefined;
 
 		const owner = init.committers[0];
 		const authority = authorityOf(init.message, init.committers);
 		if (owner !== PHASE2_BOOTSTRAP_OWNER || authority !== PHASE2_BOOTSTRAP_OWNER) {
-			throw new Error(`namespace root is not owned by trusted bootstrap publisher: ${namespace}`);
+			const kind = isRoot ? 'root' : 'reference';
+			throw new Error(`namespace ${kind} is not owned by trusted bootstrap publisher: ${referenceId}`);
 		}
 
 		const candidates = await discoverSets({
 			endpoint: this.graphql,
 			fetch: this.fetchImpl,
-			referenceId: namespace,
-			authority: PHASE2_BOOTSTRAP_OWNER,
+			referenceId,
+			authority,
 		});
-		const state = currentState({ init: init.message, authority: PHASE2_BOOTSTRAP_OWNER, candidates });
+		const state = currentState({ init: init.message, authority, candidates });
 		const value = effectiveValue(state.message);
 		if (typeof value !== 'string') {
-			throw new Error(`namespace root does not resolve to a manifest id: ${namespace}`);
+			const kind = isRoot ? 'root' : 'reference';
+			throw new Error(`namespace ${kind} does not resolve to a manifest id: ${referenceId}`);
 		}
 		return value;
 	}
