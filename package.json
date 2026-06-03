@@ -16,6 +16,7 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "test": "vitest run --no-cache",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"
