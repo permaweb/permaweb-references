@@ -1,15 +1,15 @@
-# @permaweb/names
+# @permaweb/references
 
 TypeScript SDK for Permaweb Names references.
 
 The SDK reads `reference@1.0` records from Arweave GraphQL, joins them with the
 current phase-2 namespace root reference, and can post reference updates through an
-Arweave bundler. It is framework agnostic and has no Turbo dependency.
+Arweave bundler.
 
 ## Install
 
 ```bash
-npm install @permaweb/names
+npm install @permaweb/references
 ```
 
 Read-only usage does not need wallet dependencies. Writing with the built-in
@@ -22,7 +22,7 @@ npm install arweave arbundles
 ## Quick Start
 
 ```ts
-import { ReferenceClient } from '@permaweb/names';
+import { ReferenceClient } from '@permaweb/references';
 
 const names = new ReferenceClient();
 
@@ -87,7 +87,7 @@ namespace manifest/state directly.
 ### Browser Wallet
 
 ```ts
-import { ReferenceClient, fromWallet } from '@permaweb/names';
+import { ReferenceClient, fromWallet } from '@permaweb/references';
 
 const names = new ReferenceClient({
   signer: fromWallet(window.arweaveWallet),
@@ -101,7 +101,7 @@ await names.updateReference(referenceId, {
 ### JWK
 
 ```ts
-import { ReferenceClient, fromJwk } from '@permaweb/names';
+import { ReferenceClient, fromJwk } from '@permaweb/references';
 
 const names = new ReferenceClient({
   signer: fromJwk(jwk),
@@ -209,7 +209,7 @@ import {
   discoverSets,
   discoverReferencesByAuthority,
   fetchMessageById,
-} from '@permaweb/names';
+} from '@permaweb/references';
 ```
 
 ## Development

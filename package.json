@@ -1,7 +1,7 @@
 {
-  "name": "@permaweb/names",
+  "name": "@permaweb/references",
   "version": "0.1.0",
-  "description": "Trustless reference@1.0 client: name resolution and management on Arweave",
+  "description": "reference@1.0 js client: name resolution and management on the Permaweb",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
