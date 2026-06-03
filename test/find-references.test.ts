@@ -19,12 +19,17 @@ function gateway(opts: { refs: GqlNode[]; namespace: object }) {
 	return fetchImpl;
 }
 
+function isGqlNode(value: GqlNode | Record<string, GqlNode>): value is GqlNode {
+	return typeof (value as GqlNode).id === 'string';
+}
+
 function namespaceRootGateway(opts: {
 	refs: GqlNode[];
-	root: GqlNode;
-	rootSets: GqlNode[];
+	root: GqlNode | Record<string, GqlNode>;
+	rootSets: GqlNode[] | Record<string, GqlNode[]>;
 	manifests: Record<string, object>;
 }) {
+	const roots = isGqlNode(opts.root) ? { [opts.root.id]: opts.root } : opts.root;
 	const fetchImpl = (async (url: string, init?: RequestInit) => {
 		const rawMatch = String(url).match(/\/raw\/([^/?]+)/);
 		if (rawMatch) {
@@ -33,9 +38,12 @@ function namespaceRootGateway(opts: {
 		}
 		const q = JSON.parse(String(init?.body)).query as string;
 		if (q.includes('transaction(id:')) {
-			return new Response(JSON.stringify({ data: { transaction: opts.root } }), { status: 200, headers: { 'content-type': 'application/json' } });
+			const id = q.match(/transaction\(id:\s*"([^"]+)"/)?.[1];
+			return new Response(JSON.stringify({ data: { transaction: id ? roots[id] ?? null : null } }), { status: 200, headers: { 'content-type': 'application/json' } });
 		}
-		const nodes = q.includes('"reference-id"') ? opts.rootSets : opts.refs;
+		const referenceId = q.match(/\{ name: "reference-id", values: \["([^"]+)"\] \}/)?.[1];
+		const rootSets = Array.isArray(opts.rootSets) ? opts.rootSets : opts.rootSets[referenceId ?? ''] ?? [];
+		const nodes = q.includes('"reference-id"') ? rootSets : opts.refs;
 		const data = { transactions: { pageInfo: { hasNextPage: false }, edges: nodes.map((n, i) => ({ cursor: `c${i}`, node: n })) } };
 		return new Response(JSON.stringify({ data }), { status: 200, headers: { 'content-type': 'application/json' } });
 	}) as unknown as typeof fetch;
@@ -86,6 +94,37 @@ describe('findReferences', () => {
 
 		expect(await client.findReferences('ME')).toEqual([
 			{ referenceId: 'REF_alice', name: 'alice', value: 'TARGET_alice' },
+		]);
+	});
+
+	it('follows trusted namespace references until it reaches the manifest', async () => {
+		const refs = [ref('REF_darwin', 'ME', 'TARGET_darwin')];
+		const root = ref('NS_ROOT', PHASE2_BOOTSTRAP_OWNER, 'OLD_MANIFEST');
+		const nested = ref('NS_CHILD', PHASE2_BOOTSTRAP_OWNER, 'NEW_MANIFEST');
+		const rootSet = {
+			id: 'NS_ROOT_SET',
+			owner: { address: PHASE2_BOOTSTRAP_OWNER },
+			tags: [
+				{ name: 'device', value: 'reference@1.0' },
+				{ name: 'reference-id', value: 'NS_ROOT' },
+				{ name: 'timestamp', value: '2' },
+				{ name: 'reference-value', value: 'NS_CHILD' },
+			],
+			block: { height: 2 },
+		};
+		const fetch = namespaceRootGateway({
+			refs,
+			root: { NS_ROOT: root, NS_CHILD: nested },
+			rootSets: { NS_ROOT: [rootSet], NS_CHILD: [] },
+			manifests: {
+				OLD_MANIFEST: { paths: { old: { id: 'REF_darwin' } } },
+				NEW_MANIFEST: { paths: { darwin: { id: 'REF_darwin' } } },
+			},
+		});
+		const client = new ReferenceClient({ fetch, namespace: 'NS_ROOT' });
+
+		expect(await client.findReferences('ME')).toEqual([
+			{ referenceId: 'REF_darwin', name: 'darwin', value: 'TARGET_darwin' },
 		]);
 	});
 
