@@ -26,7 +26,6 @@ export function buildInit(opts: BuildInitOptions = {}): { message: ReferenceMess
 /** A `set` (§3): updates a reference; `reference-id` and `timestamp` are required. */
 export function buildSet(opts: BuildSetOptions): { message: ReferenceMessage; tags: Tag[] } {
 	const message: ReferenceMessage = {
-		device: DEVICE,
 		'reference-id': opts.referenceId,
 		timestamp: opts.timestamp,
 	};

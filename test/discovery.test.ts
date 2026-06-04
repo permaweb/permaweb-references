@@ -19,10 +19,10 @@ const node = (id: string, owner: string, tags: Record<string, string>, block?: n
 });
 
 describe('buildSetQuery / §8', () => {
-	it('filters by device + reference-id, scopes to the authority, and sorts ascending', () => {
+	it('filters by reference-id, scopes to the authority, and sorts ascending', () => {
 		const q = buildSetQuery({ referenceId: 'R', authority: 'AUTH', minBlock: 7 });
-		expect(q).toContain('"device"');
-		expect(q).toContain('reference@1.0');
+		expect(q).not.toContain('"device"');
+		expect(q).not.toContain('reference@1.0');
 		expect(q).toContain('"reference-id"');
 		expect(q).toContain('"R"');
 		expect(q).toContain('owners: ["AUTH"]');
@@ -42,10 +42,10 @@ describe('buildSetQuery / §8', () => {
 });
 
 describe('buildAuthorityInitsQuery', () => {
-	it('finds bootstrap inits by explicit authority tag', () => {
+	it('finds bootstrap inits by explicit authority tag without relying on device lookup', () => {
 		const q = buildAuthorityInitsQuery({ authority: 'AUTH' });
-		expect(q).toContain('"device"');
-		expect(q).toContain('reference@1.0');
+		expect(q).not.toContain('"device"');
+		expect(q).not.toContain('reference@1.0');
 		expect(q).toContain('"authority"');
 		expect(q).toContain('"AUTH"');
 	});
@@ -129,11 +129,12 @@ describe('discoverSets pagination', () => {
 		expect(out.map((c) => c.id)).toEqual(['id-1', 'id-2']);
 	});
 
-	it('re-checks device and reference-id locally instead of trusting gql filters', async () => {
+	it('re-checks reference-id locally and treats the reference device tag as optional', async () => {
 		const edges = [
 			{ cursor: 'c0', node: node('wrong-ref', 'O', { device: 'reference@1.0', 'reference-id': 'OTHER' }, 1) },
 			{ cursor: 'c1', node: node('wrong-device', 'O', { device: 'other@1.0', 'reference-id': 'R' }, 2) },
-			{ cursor: 'c2', node: node('ok', 'O', { device: 'reference@1.0', 'reference-id': 'R' }, 3) },
+			{ cursor: 'c2', node: node('ok-old', 'O', { device: 'reference@1.0', 'reference-id': 'R' }, 3) },
+			{ cursor: 'c3', node: node('ok-new', 'O', { 'reference-id': 'R' }, 4) },
 		];
 		const fetchImpl = (async () =>
 			new Response(JSON.stringify({ data: { transactions: { pageInfo: { hasNextPage: false }, edges } } }), {
@@ -142,7 +143,7 @@ describe('discoverSets pagination', () => {
 			})) as unknown as typeof fetch;
 
 		const out = await discoverSets({ endpoint: 'https://gw/graphql', fetch: fetchImpl, referenceId: 'R', authority: 'O' });
-		expect(out.map((c) => c.id)).toEqual(['ok']);
+		expect(out.map((c) => c.id)).toEqual(['ok-old', 'ok-new']);
 	});
 });
 
