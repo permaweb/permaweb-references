@@ -1,6 +1,6 @@
 {
   "name": "@permaweb/references",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "reference@1.0 js client: name resolution and management on the Permaweb",
   "license": "MIT",
   "type": "module",

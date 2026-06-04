@@ -42,6 +42,27 @@ console.log(refs);
 
 ## Read References
 
+Resolve a namespace name to its current reference value:
+
+```ts
+const value = await names.resolveName('ao');
+```
+
+Fetch full name state:
+
+```ts
+const name = await names.getName('ao');
+
+// {
+//   name: string,
+//   referenceId: string,
+//   authority?: string,
+//   value: unknown,
+//   timestamp: number,
+//   source: 'init' | 'set'
+// }
+```
+
 Resolve the current value of a reference:
 
 ```ts

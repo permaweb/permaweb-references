@@ -40,6 +40,16 @@ export interface ResolvedReference {
 	source: 'init' | 'set';
 }
 
+/** A namespace name resolved to its current reference state. */
+export interface ResolvedName {
+	name: string;
+	referenceId: string;
+	authority?: Address;
+	value: unknown;
+	timestamp: number;
+	source: 'init' | 'set';
+}
+
 /** A reference controlled by a wallet, as returned by `findReferences`. */
 export interface OwnedReference {
 	referenceId: string;

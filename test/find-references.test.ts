@@ -128,6 +128,43 @@ describe('findReferences', () => {
 		]);
 	});
 
+	it('resolves a namespace name to the current reference state', async () => {
+		const root = ref('NS_ROOT', PHASE2_BOOTSTRAP_OWNER, 'MANIFEST');
+		const nameRef = ref('REF_ao', 'AUTH', 'OLD_TARGET');
+		nameRef.owner = { address: 'AUTH' };
+		const nameSet = {
+			id: 'AO_SET',
+			owner: { address: 'AUTH' },
+			tags: [
+				{ name: 'reference-id', value: 'REF_ao' },
+				{ name: 'timestamp', value: '2' },
+				{ name: 'reference-value', value: 'NEW_TARGET' },
+			],
+			block: { height: 2 },
+		};
+		const fetch = namespaceRootGateway({
+			refs: [],
+			root: { NS_ROOT: root, REF_ao: nameRef },
+			rootSets: { NS_ROOT: [], REF_ao: [nameSet] },
+			manifests: {
+				MANIFEST: { paths: { ao: { id: 'REF_ao' } } },
+			},
+		});
+		const client = new ReferenceClient({ fetch, namespace: 'NS_ROOT' });
+
+		await expect(client.resolveName('ao')).resolves.toBe('NEW_TARGET');
+		await expect(client.getName('missing')).resolves.toBeUndefined();
+		await expect(client.resolveName('missing')).rejects.toThrow('name not found: missing');
+		expect(await client.getName('ao')).toEqual({
+			name: 'ao',
+			referenceId: 'REF_ao',
+			authority: 'AUTH',
+			value: 'NEW_TARGET',
+			timestamp: 2,
+			source: 'set',
+		});
+	});
+
 	it('rejects a namespace root reference that is not owned by the trusted bootstrap publisher', async () => {
 		const refs = [ref('REF_alice', 'ME', 'TARGET_alice')];
 		const root = {
