@@ -4,10 +4,10 @@ import { buildInit, buildSet, buildPointer } from '../src/messages';
 const tagMap = (tags: { name: string; value: string }[]) => Object.fromEntries(tags.map((t) => [t.name, t.value]));
 
 describe('buildSet / §3', () => {
-	it('produces exactly the reference@1.0 set tags', () => {
+	it('produces the reference set tags without requiring a device tag', () => {
 		const { tags } = buildSet({ referenceId: 'R', value: 'TARGET', timestamp: 1780000000000 });
 		const map = tagMap(tags);
-		expect(map.device).toBe('reference@1.0');
+		expect(map.device).toBeUndefined();
 		expect(map['reference-id']).toBe('R');
 		expect(map['reference-value']).toBe('TARGET');
 		expect(map.timestamp).toBe('1780000000000');

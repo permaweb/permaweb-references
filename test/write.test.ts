@@ -96,7 +96,7 @@ describe('updateReference', () => {
 		});
 		expect((await client.updateReference('R', { value: 'NEW', timestamp: 10 })).id).toBe('id-1');
 		const m = tagMap(s.sends[0]!.tags);
-		expect(m.device).toBe('reference@1.0');
+		expect(m.device).toBeUndefined();
 		expect(m['reference-id']).toBe('R');
 		expect(m['reference-value']).toBe('NEW');
 		expect(m.timestamp).toBe('10');

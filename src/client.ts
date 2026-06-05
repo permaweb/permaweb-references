@@ -1,4 +1,4 @@
-import type { Address, OwnedReference, ResolvedReference } from './types.js';
+import type { Address, OwnedReference, ResolvedName, ResolvedReference } from './types.js';
 import { authorityOf, isInit } from './identity.js';
 import { currentState, effectiveValue } from './compute.js';
 import { buildInit, buildSet, DEVICE } from './messages.js';
@@ -84,6 +84,30 @@ export class ReferenceClient {
 	async resolveReference(referenceId: string): Promise<unknown> {
 		const ref = await this.getReference(referenceId);
 		if (!ref) throw new Error(`reference not found: ${referenceId}`);
+		return ref.value;
+	}
+
+	/** Resolve a namespace name to its current reference state. */
+	async getName(name: string): Promise<ResolvedName | undefined> {
+		const ns = await this.loadNamespace();
+		const referenceId = ns?.names[name];
+		if (!referenceId) return undefined;
+		const ref = await this.getReference(referenceId);
+		if (!ref) return undefined;
+		return {
+			name,
+			referenceId,
+			authority: ref.authority,
+			value: ref.value,
+			timestamp: ref.timestamp,
+			source: ref.source,
+		};
+	}
+
+	/** Convenience: the current value of a namespace name. Throws if the name is unknown. */
+	async resolveName(name: string): Promise<unknown> {
+		const ref = await this.getName(name);
+		if (!ref) throw new Error(`name not found: ${name}`);
 		return ref.value;
 	}
 

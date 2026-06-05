@@ -18,6 +18,10 @@ export function tagsToMessage(tags: { name: string; value: string }[] = []): Ref
 	return message;
 }
 
+function hasCompatibleReferenceDevice(message: ReferenceMessage): boolean {
+	return message.device === undefined || message.device === DEVICE;
+}
+
 /**
  * A GraphQL node becomes a fold Candidate. Committers come from the gateway's
  * `owner.address` (trusted unless `verify` re-checks the signature). Unconfirmed
@@ -41,7 +45,7 @@ export interface SetQueryArgs {
 	after?: string;
 }
 
-/** The §8 discovery query: device=reference@1.0 AND reference-id, owner-scoped, HEIGHT_ASC. */
+/** The §8 discovery query: reference-id, owner-scoped, HEIGHT_ASC. */
 export function buildSetQuery(args: SetQueryArgs): string {
 	const { referenceId, authority, minBlock = 0, first = 100, after } = args;
 	const owners = authority ? `owners: ${JSON.stringify([authority])}, ` : '';
@@ -49,7 +53,6 @@ export function buildSetQuery(args: SetQueryArgs): string {
 	return `query {
   transactions(
     ${owners}tags: [
-      { name: "device", values: ${JSON.stringify([DEVICE])} },
       { name: "reference-id", values: ${JSON.stringify([referenceId])} }
     ],
     block: { min: ${minBlock} },
@@ -100,7 +103,7 @@ export async function discoverSets(args: DiscoverArgs): Promise<Candidate[]> {
 		for (const e of edges) {
 			after = e.cursor;
 			const candidate = nodeToCandidate(e.node, index++);
-			if (candidate.message.device !== DEVICE) continue;
+			if (!hasCompatibleReferenceDevice(candidate.message)) continue;
 			if (candidate.message['reference-id'] !== referenceId) continue;
 			out.push(candidate);
 		}
@@ -139,7 +142,6 @@ export function buildAuthorityInitsQuery(args: { authority: Address; first?: num
 	return `query {
   transactions(
     tags: [
-      { name: "device", values: ${JSON.stringify([DEVICE])} },
       { name: "authority", values: ${JSON.stringify([authority])} }
     ],
     sort: HEIGHT_DESC,
