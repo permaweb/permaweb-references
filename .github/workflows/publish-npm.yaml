@@ -134,6 +134,9 @@ jobs:
       - name: Build package
         run: npm run build
 
+      - name: Publish to NPM
+        run: npm publish
+
       - name: Commit version bump and tag
         run: |
           git config user.name "github-actions[bot]"
@@ -145,6 +148,3 @@ jobs:
           git push origin "v${PACKAGE_VERSION}"
         env:
           PACKAGE_VERSION: ${{ steps.package-version.outputs.version }}
-
-      - name: Publish to NPM
-        run: npm publish

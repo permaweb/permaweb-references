@@ -3,6 +3,10 @@
   "version": "0.1.2",
   "description": "reference@1.0 js client: name resolution and management on the Permaweb",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/permaweb/permaweb-references"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
