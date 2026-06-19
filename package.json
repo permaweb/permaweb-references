@@ -1,6 +1,6 @@
 {
   "name": "@permaweb/references",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "reference@1.0 js client: name resolution and management on the Permaweb",
   "license": "MIT",
   "type": "module",
@@ -13,7 +13,9 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepare": "npm run build",
@@ -30,7 +32,11 @@
     "arbundles": "*"
   },
   "peerDependenciesMeta": {
-    "arweave": { "optional": true },
-    "arbundles": { "optional": true }
+    "arweave": {
+      "optional": true
+    },
+    "arbundles": {
+      "optional": true
+    }
   }
 }
