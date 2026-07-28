@@ -2,9 +2,7 @@
 
 TypeScript SDK for Permaweb Names references.
 
-The SDK reads `reference@1.0` records from Arweave GraphQL, joins them with the
-current phase-2 namespace root reference, and can post reference updates through an
-Arweave bundler.
+The SDK reads legacy `reference@1.0` records and the current mainnet Permawe Names namespace. Namespace entries may point directly at references or at tokenized carrier name-token processes whose current state is read through HyperBEAM.
 
 ## Install
 
@@ -56,10 +54,11 @@ const name = await names.getName('ao');
 // {
 //   name: string,
 //   referenceId: string,
+//   kind: 'reference' | 'name-token',
 //   authority?: string,
 //   value: unknown,
-//   timestamp: number,
-//   source: 'init' | 'set'
+//   timestamp?: number,
+//   source?: 'init' | 'set' | 'process'
 // }
 ```
 
@@ -102,6 +101,26 @@ const refs = await names.findReferences(authorityAddress);
 `findReferences` returns references controlled by an authority. It is not an
 "all names" or "all subdomains" listing API. All-name discovery should read the
 namespace manifest/state directly.
+
+List names controlled by a wallet in the mainnet namespace:
+
+```ts
+const names = await client.findNamesByOwner(authorityAddress);
+
+// [
+//   {
+//     name: string,
+//     referenceId: string,
+//     namespaceId: string,
+//     kind: 'reference' | 'name-token',
+//     value: unknown,
+//     authority?: string,
+//     processId?: string
+//   }
+// ]
+```
+
+`findNamesByOwner` keeps the old reference path and the tokenized name path separate. Tokenized names are discovered by namespace process id, then verified against current carrier/name-token process state.
 
 ## Update References
 
@@ -156,9 +175,7 @@ const { referenceId } = await names.createReference({
 });
 ```
 
-For user-created references, `authority` defaults to the signer address. Pass an
-explicit `authority` when a bootstrap publisher is creating the reference on
-behalf of another wallet. The resulting data item ID is the reference ID.
+For user-created references, `authority` defaults to the signer address. Pass an explicit `authority` when a bootstrap publisher is creating the reference on behalf of another wallet. The resulting data item ID is the reference ID.
 
 ## Configuration
 
@@ -166,8 +183,9 @@ behalf of another wallet. The resulting data item ID is the reference ID.
 const names = new ReferenceClient({
   gateway: 'https://arweave.net',
   graphql: 'https://arweave.net/graphql',
+  compute: 'https://arweave.net',
   bundler: 'https://up.arweave.net',
-  namespace: 'w0eqd43OMzzXr-5yhFC-LkgifQqih8YEPb4mLt6VSZo',
+  namespace: 'fQXYPE9MAcfI1wV2CwJ3sJIhgT9btBOlYFOKFDGhAs0',
   trustedPublishers: [
     'uAaRGha_a1ni_VjLf9Be2SFB7NJw1PWnjevdfeuJ_7c',
   ],
@@ -179,11 +197,41 @@ const names = new ReferenceClient({
 | --- | --- | --- |
 | `gateway` | `https://arweave.net` | Gateway used for tx reads and raw namespace fetches. |
 | `graphql` | `${gateway}/graphql` | GraphQL endpoint used for reference discovery. |
+| `compute` | `gateway` | HyperBEAM/gateway origin used to read carrier/name-token process state. |
 | `bundler` | `https://up.arweave.net` | Bundler endpoint used by the JWK signer. |
-| `namespace` | phase-2 namespace root | Namespace root reference or manifest ID used to attach names to references. Set `null` to skip name lookup. |
+| `namespace` | mainnet names namespace root | Namespace root reference or manifest ID used to attach names to references and tokenized names. Set `null` to skip name lookup. |
 | `trustedPublishers` | phase-2 bootstrap publisher | Publishers accepted for authority-tagged bootstrap reference inits. |
 | `signer` | none | Required only for create/update operations. |
 | `fetch` | global `fetch` | Custom fetch implementation for runtimes or tests. |
+
+## Mainnet Names
+
+The default namespace is now the mainnet Permaweb Names root:
+
+```txt
+fQXYPE9MAcfI1wV2CwJ3sJIhgT9btBOlYFOKFDGhAs0
+```
+
+For tokenized names, the namespace manifest maps `name -> process id`. The SDK
+checks whether that process was spawned with `carrier@1.0` or `name-token@1.0`,
+then reads:
+
+```txt
+/<process-id>~process@1.0/now
+```
+
+The current holder is the address with balance `1`; if the single unit is escrowed in a live swap order, the seller remains the owner until settlement.
+
+Updating legacy references still uses `updateReference`. Updating a tokenized name target is a layer-1 Arweave transaction to the process with:
+
+```txt
+target=<process-id>
+quantity=1
+action=set
+reference-value=<new target>
+```
+
+That path is deliberately not sent through the old bundler reference signer, because carrier/name-token processes are sequenced from data-free L1 Arweave transactions.
 
 ## Phase-2 Trust Model
 
@@ -230,6 +278,8 @@ import {
   discoverSets,
   discoverReferencesByAuthority,
   fetchMessageById,
+  parseNamesNamespace,
+  readNameTokenState,
 } from '@permaweb/references';
 ```
 

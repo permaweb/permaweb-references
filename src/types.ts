@@ -26,6 +26,8 @@ export interface Candidate {
 	id?: string;
 }
 
+export type NameKind = 'reference' | 'name-token';
+
 export interface ResolvedState {
 	message: ReferenceMessage;
 	timestamp: number;
@@ -44,10 +46,14 @@ export interface ResolvedReference {
 export interface ResolvedName {
 	name: string;
 	referenceId: string;
+	namespaceId?: string;
+	processId?: string;
 	authority?: Address;
 	value: unknown;
-	timestamp: number;
-	source: 'init' | 'set';
+	timestamp?: number;
+	source?: 'init' | 'set' | 'process';
+	kind?: NameKind;
+	tokenState?: unknown;
 }
 
 /** A reference controlled by a wallet, as returned by `findReferences`. */
@@ -59,4 +65,18 @@ export interface OwnedReference {
 	value: unknown;
 	nameSource?: string;
 	dateRegistered?: string;
+}
+
+/** A wallet-owned name in the mainnet namespace, legacy or tokenized. */
+export interface OwnedName {
+	name: string;
+	referenceId: string;
+	namespaceId: string;
+	authority?: Address;
+	value: unknown;
+	kind: NameKind;
+	processId?: string;
+	timestamp?: number;
+	source?: 'init' | 'set' | 'process';
+	tokenState?: unknown;
 }

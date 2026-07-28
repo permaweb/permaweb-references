@@ -36,9 +36,14 @@ function namespaceRootGateway(opts: {
 			const manifest = opts.manifests[rawMatch[1]!];
 			return new Response(JSON.stringify(manifest ?? { paths: {} }), { status: 200, headers: { 'content-type': 'application/json' } });
 		}
+		const headMatch = String(url).match(/\/([^/?]+)$/);
+		if (init?.method === 'HEAD' && headMatch) {
+			return new Response(null, { status: 200, headers: { device: 'reference@1.0' } });
+		}
 		const q = JSON.parse(String(init?.body)).query as string;
+		const variables = JSON.parse(String(init?.body)).variables as Record<string, string> | undefined;
 		if (q.includes('transaction(id:')) {
-			const id = q.match(/transaction\(id:\s*"([^"]+)"/)?.[1];
+			const id = variables?.id ?? q.match(/transaction\(id:\s*"([^"]+)"/)?.[1];
 			return new Response(JSON.stringify({ data: { transaction: id ? roots[id] ?? null : null } }), { status: 200, headers: { 'content-type': 'application/json' } });
 		}
 		const referenceId = q.match(/\{ name: "reference-id", values: \["([^"]+)"\] \}/)?.[1];
@@ -158,11 +163,79 @@ describe('findReferences', () => {
 		expect(await client.getName('ao')).toEqual({
 			name: 'ao',
 			referenceId: 'REF_ao',
+			namespaceId: 'REF_ao',
 			authority: 'AUTH',
 			value: 'NEW_TARGET',
 			timestamp: 2,
 			source: 'set',
+			kind: 'reference',
 		});
+	});
+
+	it('resolves a namespace entry backed by a carrier/name-token process', async () => {
+		const processId = 'p'.repeat(43);
+		const holder = 'h'.repeat(43);
+		const target = 't'.repeat(43);
+		const fetchImpl = (async (url: string, init?: RequestInit) => {
+			if (String(url).includes('/raw/MANIFEST')) {
+				return new Response(JSON.stringify({ paths: { alpha: { id: processId } } }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+			if (init?.method === 'HEAD') {
+				return new Response(null, {
+					status: 200,
+					headers: { 'execution-device': 'carrier@1.0', 'initial-value': target },
+				});
+			}
+			if (String(url).includes(`${processId}~process@1.0`)) {
+				return new Response(
+					JSON.stringify({
+						'execution-device': 'carrier@1.0',
+						name: 'alpha',
+						'total-supply': '1',
+						balances: { [holder]: '1' },
+						value: { target },
+					}),
+					{ status: 200, headers: { 'content-type': 'application/json' } }
+				);
+			}
+			const body = JSON.parse(String(init?.body));
+			const q = body.query as string;
+			if (q.includes('transaction(id:')) {
+				const id = body.variables?.id ?? q.match(/transaction\(id:\s*"([^"]+)"/)?.[1];
+				const transaction =
+					id === processId
+						? {
+								id: processId,
+								owner: { address: holder },
+								tags: [{ name: 'execution-device', value: 'carrier@1.0' }],
+							}
+						: null;
+				return new Response(JSON.stringify({ data: { transaction } }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+			return new Response(JSON.stringify({ data: { transactions: { pageInfo: { hasNextPage: false }, edges: [] } } }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			});
+		}) as unknown as typeof fetch;
+		const client = new ReferenceClient({ fetch: fetchImpl, gateway: 'https://gw.test', namespace: 'MANIFEST' });
+
+		expect(await client.getName('alpha')).toMatchObject({
+			name: 'alpha',
+			referenceId: processId,
+			namespaceId: processId,
+			processId,
+			authority: holder,
+			value: target,
+			kind: 'name-token',
+			source: 'process',
+		});
+		await expect(client.resolveName('alpha')).resolves.toBe(target);
 	});
 
 	it('rejects a namespace root reference that is not owned by the trusted bootstrap publisher', async () => {

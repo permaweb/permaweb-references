@@ -1,13 +1,24 @@
-import type { Address, OwnedReference, ResolvedName, ResolvedReference } from './types.js';
+import type { Address, OwnedName, OwnedReference, ResolvedName, ResolvedReference } from './types.js';
 import { authorityOf, isInit } from './identity.js';
 import { currentState, effectiveValue } from './compute.js';
 import { buildInit, buildSet, DEVICE } from './messages.js';
 import { discoverSets, discoverReferencesByAuthority, fetchMessageById, PHASE2_BOOTSTRAP_OWNER } from './discovery.js';
 import { parseNamespace, type Namespace } from './namespace.js';
+import {
+	findNamesNamespaceEntries,
+	findOwnedNamesCarriers,
+	findPurchasedNamesCarriers,
+	isNameTokenProcess,
+	nameTokenRecord,
+	readNameTokenState,
+	resolveNamesNamespaceReference,
+} from './names.js';
 import type { Signer } from './signer.js';
 
 /** The phase-2 namespace root reference. Override via config. */
 export const PHASE2_NAMESPACE = 'w0eqd43OMzzXr-5yhFC-LkgifQqih8YEPb4mLt6VSZo';
+/** The current mainnet Permaweb Names namespace root reference. */
+export const MAINNET_NAMES_NAMESPACE = 'fQXYPE9MAcfI1wV2CwJ3sJIhgT9btBOlYFOKFDGhAs0';
 
 export interface ReferenceClientConfig {
 	/** Tx + GraphQL base. Default https://arweave.net; use any gateway you like. */
@@ -18,8 +29,10 @@ export interface ReferenceClientConfig {
 	 *  https://up.arweave.net. No Turbo SDK; set your own to override. */
 	bundler?: string;
 	/** Namespace root reference or manifest id, used to attach names in
-	 *  `findReferences`. Defaults to the phase-2 namespace root; set null to skip. */
+	 *  reads. Defaults to the mainnet Permaweb Names namespace; set null to skip. */
 	namespace?: string | null;
+	/** HyperBEAM/gateway origin used to read carrier/name-token process state. */
+	compute?: string;
 	/** Trusted bootstrap publishers for authority-tagged reference inits. */
 	trustedPublishers?: Address[];
 	/** Signer for the update path (fromWallet / fromJwk). Required only for writes. */
@@ -44,6 +57,7 @@ export class ReferenceClient {
 	readonly graphql: string;
 	readonly bundler: string;
 	readonly namespace: string | null;
+	readonly compute: string;
 	readonly trustedPublishers: Address[];
 	readonly signer?: Signer;
 	private readonly fetchImpl: typeof fetch;
@@ -53,7 +67,8 @@ export class ReferenceClient {
 		this.gateway = (config.gateway ?? DEFAULTS.gateway).replace(/\/+$/, '');
 		this.graphql = config.graphql ?? `${this.gateway}/graphql`;
 		this.bundler = (config.bundler ?? DEFAULTS.bundler).replace(/\/+$/, '');
-		this.namespace = config.namespace === undefined ? PHASE2_NAMESPACE : config.namespace;
+		this.namespace = config.namespace === undefined ? MAINNET_NAMES_NAMESPACE : config.namespace;
+		this.compute = (config.compute ?? this.gateway).replace(/\/+$/, '');
 		this.trustedPublishers = config.trustedPublishers ?? [PHASE2_BOOTSTRAP_OWNER];
 		this.signer = config.signer;
 		const f = config.fetch ?? (globalThis.fetch as typeof fetch | undefined);
@@ -90,17 +105,27 @@ export class ReferenceClient {
 	/** Resolve a namespace name to its current reference state. */
 	async getName(name: string): Promise<ResolvedName | undefined> {
 		const ns = await this.loadNamespace();
-		const referenceId = ns?.names[name];
-		if (!referenceId) return undefined;
+		const namespaceId = ns?.names[name];
+		if (!namespaceId) return undefined;
+		if (await isNameTokenProcess(namespaceId, { graphql: this.graphql, fetch: this.fetchImpl })) {
+			const { state } = await readNameTokenState(namespaceId, { provider: this.compute, fetch: this.fetchImpl });
+			return nameTokenRecord(name, namespaceId, state);
+		}
+		const referenceId = await resolveNamesNamespaceReference(namespaceId, {
+			gateway: this.gateway,
+			fetch: this.fetchImpl,
+		});
 		const ref = await this.getReference(referenceId);
 		if (!ref) return undefined;
 		return {
 			name,
 			referenceId,
+			namespaceId,
 			authority: ref.authority,
 			value: ref.value,
 			timestamp: ref.timestamp,
 			source: ref.source,
+			kind: 'reference',
 		};
 	}
 
@@ -133,6 +158,86 @@ export class ReferenceClient {
 		}));
 	}
 
+	/**
+	 * Names a wallet currently controls in the configured namespace.
+	 *
+	 * This includes legacy `reference@1.0` names and mainnet carrier/name-token
+	 * processes. Purchased tokenized names are discovered from registration txs
+	 * and then verified against current process state.
+	 */
+	async findNamesByOwner(authority: Address): Promise<OwnedName[]> {
+		const [refs, ns] = await Promise.all([this.findReferences(authority), this.loadNamespace()]);
+		const namespace = ns ?? { names: {}, byReference: {} };
+		const referenceEntries = findNamesNamespaceEntries(
+			namespace,
+			refs.map((ref) => ref.referenceId)
+		);
+		const referenceRecords: Array<OwnedName | null> = await Promise.all(
+			referenceEntries.map(async (entry) => {
+				const state = await this.getReference(entry.referenceId);
+				if (!state) return null;
+				const record: OwnedName = {
+					name: entry.name,
+					referenceId: entry.referenceId,
+					namespaceId: entry.namespaceId,
+					authority: state.authority,
+					value: state.value,
+					timestamp: state.timestamp,
+					source: state.source,
+					kind: 'reference' as const,
+				};
+				return record;
+			})
+		);
+
+		const carrierOptions = { graphql: this.graphql, fetch: this.fetchImpl };
+		const [ownedCarriers, purchasedCarriers] = await Promise.all([
+			findOwnedNamesCarriers(namespace, authority, carrierOptions),
+			findPurchasedNamesCarriers(namespace, authority, carrierOptions),
+		]);
+		const candidates = new Map<string, { name: string; processId: string; initialValue?: string; initialHolder?: string }>();
+		for (const carrier of ownedCarriers) {
+			candidates.set(carrier.processId, {
+				name: carrier.name,
+				processId: carrier.processId,
+				initialHolder: carrier.initialHolder,
+				initialValue: carrier.initialValue,
+			});
+		}
+		for (const carrier of purchasedCarriers) {
+			if (!candidates.has(carrier.processId)) candidates.set(carrier.processId, carrier);
+		}
+
+		const carrierRecords: Array<OwnedName | null> = await Promise.all(
+			[...candidates.values()].map(async (candidate) => {
+				try {
+					const { state } = await readNameTokenState(candidate.processId, {
+						provider: this.compute,
+						fetch: this.fetchImpl,
+					});
+					const record = nameTokenRecord(candidate.name, candidate.processId, state);
+					return record.authority === authority ? record : null;
+				} catch {
+					if (!candidate.initialHolder || candidate.initialHolder !== authority) return null;
+					const record: OwnedName = {
+						name: candidate.name,
+						referenceId: candidate.processId,
+						namespaceId: candidate.processId,
+						processId: candidate.processId,
+						authority,
+						value: candidate.initialValue ?? '',
+						kind: 'name-token' as const,
+						source: 'process' as const,
+					};
+					return record;
+				}
+			})
+		);
+
+		const records = [...referenceRecords, ...carrierRecords].filter((record): record is OwnedName => record !== null);
+		return records.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
 	/** Fetch a raw document by id via /raw/ (so a manifest is returned, not resolved). */
 	async fetchRaw(id: string): Promise<string> {
 		const res = await this.fetchImpl(`${this.gateway}/raw/${id}`, { headers: { accept: 'application/json' } });
@@ -146,10 +251,25 @@ export class ReferenceClient {
 		if (!this.namespaceMemo) {
 			this.namespaceMemo = (async () => {
 				const manifestId = await this.resolveNamespaceManifestId(this.namespace!);
-				return parseNamespace(await this.fetchRaw(manifestId));
+				return parseNamespace(await this.fetchNamespaceManifest(manifestId));
 			})();
 		}
 		return this.namespaceMemo;
+	}
+
+	private async fetchNamespaceManifest(manifestId: string): Promise<string> {
+		try {
+			const res = await this.fetchImpl(`${this.gateway}/${manifestId}/serialize~json@1.0`, {
+				headers: { accept: 'application/json' },
+			});
+			if (res.ok) {
+				const envelope = await res.json();
+				if (typeof envelope?.data === 'string') return envelope.data;
+			}
+		} catch {
+			// Raw transaction data remains the fallback.
+		}
+		return this.fetchRaw(manifestId);
 	}
 
 	private async resolveNamespaceManifestId(namespace: string): Promise<string> {
@@ -172,7 +292,8 @@ export class ReferenceClient {
 
 		const owner = init.committers[0];
 		const authority = authorityOf(init.message, init.committers);
-		if (owner !== PHASE2_BOOTSTRAP_OWNER || authority !== PHASE2_BOOTSTRAP_OWNER) {
+		const trusted = new Set(this.trustedPublishers);
+		if (!owner || !authority || !trusted.has(owner) || !trusted.has(authority)) {
 			const kind = isRoot ? 'root' : 'reference';
 			throw new Error(`namespace ${kind} is not owned by trusted bootstrap publisher: ${referenceId}`);
 		}
