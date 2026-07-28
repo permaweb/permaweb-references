@@ -185,7 +185,7 @@ const names = new ReferenceClient({
   graphql: 'https://arweave.net/graphql',
   compute: 'https://arweave.net',
   bundler: 'https://up.arweave.net',
-  namespace: 'fQXYPE9MAcfI1wV2CwJ3sJIhgT9btBOlYFOKFDGhAs0',
+  namespace: 'jFJkMDodzU4rIyub6xWWJ9NCSWnGktcP-tBuFMywG4k',
   trustedPublishers: [
     'uAaRGha_a1ni_VjLf9Be2SFB7NJw1PWnjevdfeuJ_7c',
   ],
@@ -209,7 +209,7 @@ const names = new ReferenceClient({
 The default namespace is now the mainnet Permaweb Names root:
 
 ```txt
-fQXYPE9MAcfI1wV2CwJ3sJIhgT9btBOlYFOKFDGhAs0
+jFJkMDodzU4rIyub6xWWJ9NCSWnGktcP-tBuFMywG4k
 ```
 
 For tokenized names, the namespace manifest maps `name -> process id`. The SDK

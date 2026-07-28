@@ -18,7 +18,7 @@ import type { Signer } from './signer.js';
 /** The phase-2 namespace root reference. Override via config. */
 export const PHASE2_NAMESPACE = 'w0eqd43OMzzXr-5yhFC-LkgifQqih8YEPb4mLt6VSZo';
 /** The current mainnet Permaweb Names namespace root reference. */
-export const MAINNET_NAMES_NAMESPACE = 'fQXYPE9MAcfI1wV2CwJ3sJIhgT9btBOlYFOKFDGhAs0';
+export const MAINNET_NAMES_NAMESPACE = 'jFJkMDodzU4rIyub6xWWJ9NCSWnGktcP-tBuFMywG4k';
 
 export interface ReferenceClientConfig {
 	/** Tx + GraphQL base. Default https://arweave.net; use any gateway you like. */
