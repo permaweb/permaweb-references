@@ -185,18 +185,19 @@ export async function readCarrierState(
 		provider: string;
 		fetch: typeof fetch;
 		signal?: AbortSignal;
+		requestTimeout?: number;
 	}
 ): Promise<CarrierReadResult> {
 	if (!isArweaveId(processId)) throw new TypeError('invalid-carrier-process-id');
 	const provider = options.provider.replace(/\/+$/, '');
 	const paths = [
+		`${provider}/${processId}~process@1.0/compute&max-age=60?require-codec=json%401.0&accept-bundle=true`,
 		`${provider}/${processId}~process@1.0/now&max-age=60?require-codec=json%401.0&accept-bundle=true`,
-		`${provider}/${processId}~process@1.0/now?require-codec=application%2Fjson&accept-bundle=true`,
 	];
 	let lastError: unknown;
 
 	for (const path of paths) {
-		const request = timeoutSignal(options.signal, COMPUTE_TIMEOUT);
+		const request = timeoutSignal(options.signal, options.requestTimeout ?? COMPUTE_TIMEOUT);
 		try {
 			const response = await options.fetch(path, {
 				headers: {
@@ -227,6 +228,7 @@ export async function waitForCarrierState(
 		signal?: AbortSignal;
 		interval?: number;
 		timeout?: number;
+		requestTimeout?: number;
 	}
 ): Promise<CarrierReadResult> {
 	const startedAt = Date.now();

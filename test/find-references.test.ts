@@ -238,6 +238,109 @@ describe('findReferences', () => {
 		await expect(client.resolveName('alpha')).resolves.toBe(target);
 	});
 
+	it('rejects carrier namespace lookup when live process state is unavailable', async () => {
+		const processId = 'p'.repeat(43);
+		const holder = 'h'.repeat(43);
+		const target = 't'.repeat(43);
+		const fetchImpl = (async (url: string, init?: RequestInit) => {
+			if (String(url).includes('/raw/MANIFEST')) {
+				return new Response(JSON.stringify({ paths: { alpha: { id: processId } } }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+			if (String(url).includes(`${processId}~process@1.0`)) {
+				return new Response(JSON.stringify({ error: 'state unavailable' }), {
+					status: 504,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+			const body = JSON.parse(String(init?.body));
+			const q = body.query as string;
+			if (q.includes('transaction(id:')) {
+				const id = body.variables?.id ?? q.match(/transaction\(id:\s*"([^"]+)"/)?.[1];
+				const transaction =
+					id === processId
+						? {
+								id: processId,
+								owner: { address: holder },
+								tags: [
+									{ name: 'execution-device', value: 'carrier@1.0' },
+									{ name: 'initial-holder', value: holder },
+									{ name: 'initial-value', value: target },
+								],
+							}
+						: null;
+				return new Response(JSON.stringify({ data: { transaction } }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+			return new Response(JSON.stringify({ data: { transactions: { pageInfo: { hasNextPage: false }, edges: [] } } }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			});
+		}) as unknown as typeof fetch;
+		const client = new ReferenceClient({ fetch: fetchImpl, gateway: 'https://gw.test', namespace: 'MANIFEST' });
+
+		await expect(client.getName('alpha')).rejects.toThrow('HTTP 504');
+		await expect(client.resolveName('alpha')).rejects.toThrow('HTTP 504');
+	});
+
+	it('rejects owner discovery when carrier state verification fails', async () => {
+		const processId = 'p'.repeat(43);
+		const holder = 'h'.repeat(43);
+		const target = 't'.repeat(43);
+		const fetchImpl = (async (url: string, init?: RequestInit) => {
+			if (String(url).includes('/raw/MANIFEST')) {
+				return new Response(JSON.stringify({ paths: { alpha: { id: processId } } }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+			if (String(url).includes(`${processId}~process@1.0`)) {
+				return new Response(JSON.stringify({ error: 'state unavailable' }), {
+					status: 504,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+			const body = JSON.parse(String(init?.body));
+			const q = body.query as string;
+			if (q.includes('transaction(id:')) {
+				return new Response(JSON.stringify({ data: { transaction: null } }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+			const tags = body.variables?.tags as Array<{ name: string; values: string[] }> | undefined;
+			const owners = body.variables?.owners as string[] | undefined;
+			const isOwnedCarrierQuery = tags?.some((tag) => tag.name === 'initial-holder' && tag.values.includes(holder));
+			const edges = isOwnedCarrierQuery && !owners
+				? [
+						{
+							cursor: 'carrier',
+							node: {
+								id: processId,
+								owner: { address: holder },
+								tags: [
+									{ name: tags?.[0]?.name ?? 'execution-device', value: 'carrier@1.0' },
+									{ name: 'initial-holder', value: holder },
+									{ name: 'initial-value', value: target },
+								],
+							},
+						},
+					]
+				: [];
+			return new Response(JSON.stringify({ data: { transactions: { pageInfo: { hasNextPage: false }, edges } } }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			});
+		}) as unknown as typeof fetch;
+		const client = new ReferenceClient({ fetch: fetchImpl, gateway: 'https://gw.test', namespace: 'MANIFEST' });
+
+		await expect(client.findNamesByOwner(holder)).rejects.toThrow('HTTP 504');
+	});
+
 	it('rejects a namespace root reference that is not owned by the trusted bootstrap publisher', async () => {
 		const refs = [ref('REF_alice', 'ME', 'TARGET_alice')];
 		const root = {

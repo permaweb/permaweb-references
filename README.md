@@ -185,7 +185,7 @@ const names = new ReferenceClient({
   graphql: 'https://arweave.net/graphql',
   compute: 'https://arweave.net',
   bundler: 'https://up.arweave.net',
-  namespace: 'jFJkMDodzU4rIyub6xWWJ9NCSWnGktcP-tBuFMywG4k',
+  namespace: 'fQXYPE9MAcfI1wV2CwJ3sJIhgT9btBOlYFOKFDGhAs0',
   trustedPublishers: [
     'uAaRGha_a1ni_VjLf9Be2SFB7NJw1PWnjevdfeuJ_7c',
   ],
@@ -209,14 +209,14 @@ const names = new ReferenceClient({
 The default namespace is now the mainnet Permaweb Names root:
 
 ```txt
-jFJkMDodzU4rIyub6xWWJ9NCSWnGktcP-tBuFMywG4k
+fQXYPE9MAcfI1wV2CwJ3sJIhgT9btBOlYFOKFDGhAs0
 ```
 
 For carrier-backed names, the namespace manifest maps `name -> process id`. The SDK
 checks whether that process was spawned with `carrier@1.0`, then reads:
 
 ```txt
-/<process-id>~process@1.0/now
+/<process-id>~process@1.0/compute
 ```
 
 The current holder is the address with balance `1`; if the single unit is escrowed in a live swap order, the seller remains the owner until settlement.

@@ -8,8 +8,8 @@ import {
 	findNamesNamespaceEntries,
 	findOwnedNamesCarriers,
 	findPurchasedNamesCarriers,
-	isCarrierProcess,
 	carrierRecord,
+	isCarrierProcess,
 	readCarrierState,
 	resolveNamesNamespaceReference,
 } from './names.js';
@@ -18,7 +18,7 @@ import type { Signer } from './signer.js';
 /** The phase-2 namespace root reference. Override via config. */
 export const PHASE2_NAMESPACE = 'w0eqd43OMzzXr-5yhFC-LkgifQqih8YEPb4mLt6VSZo';
 /** The current mainnet Permaweb Names namespace root reference. */
-export const MAINNET_NAMES_NAMESPACE = 'jFJkMDodzU4rIyub6xWWJ9NCSWnGktcP-tBuFMywG4k';
+export const MAINNET_NAMES_NAMESPACE = 'fQXYPE9MAcfI1wV2CwJ3sJIhgT9btBOlYFOKFDGhAs0';
 
 export interface ReferenceClientConfig {
 	/** Tx + GraphQL base. Default https://arweave.net; use any gateway you like. */
@@ -210,27 +210,12 @@ export class ReferenceClient {
 
 		const carrierRecords: Array<OwnedName | null> = await Promise.all(
 			[...candidates.values()].map(async (candidate) => {
-				try {
-					const { state } = await readCarrierState(candidate.processId, {
-						provider: this.compute,
-						fetch: this.fetchImpl,
-					});
-					const record = carrierRecord(candidate.name, candidate.processId, state);
-					return record.authority === authority ? record : null;
-				} catch {
-					if (!candidate.initialHolder || candidate.initialHolder !== authority) return null;
-					const record: OwnedName = {
-						name: candidate.name,
-						referenceId: candidate.processId,
-						namespaceId: candidate.processId,
-						processId: candidate.processId,
-						authority,
-						value: candidate.initialValue ?? '',
-						kind: 'carrier' as const,
-						source: 'process' as const,
-					};
-					return record;
-				}
+				const { state } = await readCarrierState(candidate.processId, {
+					provider: this.compute,
+					fetch: this.fetchImpl,
+				});
+				const record = carrierRecord(candidate.name, candidate.processId, state);
+				return record.authority === authority ? record : null;
 			})
 		);
 
