@@ -8,9 +8,9 @@ import {
 	findNamesNamespaceEntries,
 	findOwnedNamesCarriers,
 	findPurchasedNamesCarriers,
-	isNameTokenProcess,
-	nameTokenRecord,
-	readNameTokenState,
+	isCarrierProcess,
+	carrierRecord,
+	readCarrierState,
 	resolveNamesNamespaceReference,
 } from './names.js';
 import type { Signer } from './signer.js';
@@ -31,7 +31,7 @@ export interface ReferenceClientConfig {
 	/** Namespace root reference or manifest id, used to attach names in
 	 *  reads. Defaults to the mainnet Permaweb Names namespace; set null to skip. */
 	namespace?: string | null;
-	/** HyperBEAM/gateway origin used to read carrier/name-token process state. */
+	/** HyperBEAM/gateway origin used to read carrier process state. */
 	compute?: string;
 	/** Trusted bootstrap publishers for authority-tagged reference inits. */
 	trustedPublishers?: Address[];
@@ -107,9 +107,9 @@ export class ReferenceClient {
 		const ns = await this.loadNamespace();
 		const namespaceId = ns?.names[name];
 		if (!namespaceId) return undefined;
-		if (await isNameTokenProcess(namespaceId, { graphql: this.graphql, fetch: this.fetchImpl })) {
-			const { state } = await readNameTokenState(namespaceId, { provider: this.compute, fetch: this.fetchImpl });
-			return nameTokenRecord(name, namespaceId, state);
+		if (await isCarrierProcess(namespaceId, { graphql: this.graphql, fetch: this.fetchImpl })) {
+			const { state } = await readCarrierState(namespaceId, { provider: this.compute, fetch: this.fetchImpl });
+			return carrierRecord(name, namespaceId, state);
 		}
 		const referenceId = await resolveNamesNamespaceReference(namespaceId, {
 			gateway: this.gateway,
@@ -161,8 +161,8 @@ export class ReferenceClient {
 	/**
 	 * Names a wallet currently controls in the configured namespace.
 	 *
-	 * This includes legacy `reference@1.0` names and mainnet carrier/name-token
-	 * processes. Purchased tokenized names are discovered from registration txs
+	 * This includes legacy `reference@1.0` names and mainnet carrier
+	 * processes. Purchased carrier-backed names are discovered from registration txs
 	 * and then verified against current process state.
 	 */
 	async findNamesByOwner(authority: Address): Promise<OwnedName[]> {
@@ -211,11 +211,11 @@ export class ReferenceClient {
 		const carrierRecords: Array<OwnedName | null> = await Promise.all(
 			[...candidates.values()].map(async (candidate) => {
 				try {
-					const { state } = await readNameTokenState(candidate.processId, {
+					const { state } = await readCarrierState(candidate.processId, {
 						provider: this.compute,
 						fetch: this.fetchImpl,
 					});
-					const record = nameTokenRecord(candidate.name, candidate.processId, state);
+					const record = carrierRecord(candidate.name, candidate.processId, state);
 					return record.authority === authority ? record : null;
 				} catch {
 					if (!candidate.initialHolder || candidate.initialHolder !== authority) return null;
@@ -226,7 +226,7 @@ export class ReferenceClient {
 						processId: candidate.processId,
 						authority,
 						value: candidate.initialValue ?? '',
-						kind: 'name-token' as const,
+						kind: 'carrier' as const,
 						source: 'process' as const,
 					};
 					return record;

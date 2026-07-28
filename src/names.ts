@@ -3,7 +3,7 @@ import { parseNamespace, type Namespace } from './namespace.js';
 
 const ARWEAVE_ID = /^[A-Za-z0-9_-]{43}$/;
 const UNSIGNED_INTEGER = /^(?:0|[1-9]\d*)$/;
-const NAME_PROCESS_DEVICES = new Set(['carrier@1.0', 'name-token@1.0']);
+const CARRIER_DEVICES = new Set(['carrier@1.0']);
 const LIVE_ORDER = new Set<SwapOrderStatus>(['open', 'reserved']);
 const GRAPHQL_PAGE_SIZE = 100;
 const GRAPHQL_MAX_PAGES = 100;
@@ -11,7 +11,7 @@ const CARRIER_LOOKUP_CONCURRENCY = 8;
 const COMPUTE_TIMEOUT = 12_000;
 
 export type NamesNamespace = Namespace & {
-	/** name -> reference id carried by a carrier/name-token process */
+	/** name -> reference id carried by a carrier process */
 	references: Record<string, string>;
 	/** reference id -> name */
 	byReferenceId: Record<string, string>;
@@ -50,7 +50,7 @@ export type SwapOrder = {
 	paymentTx?: string;
 };
 
-export type NameTokenState = {
+export type CarrierState = {
 	device: string;
 	name: string;
 	totalSupply: number;
@@ -61,8 +61,8 @@ export type NameTokenState = {
 	raw: Record<string, unknown>;
 };
 
-export type ComputeResult = {
-	state: NameTokenState;
+export type CarrierReadResult = {
+	state: CarrierState;
 	provider: string;
 };
 
@@ -90,7 +90,7 @@ export function isArweaveId(value: string): boolean {
 	return ARWEAVE_ID.test(value);
 }
 
-/** Parse a namespace manifest without resolving carrier/name-token entries. */
+/** Parse a namespace manifest without resolving carrier entries. */
 export function parseNamesNamespace(text: string): Namespace {
 	return parseNamespace(text);
 }
@@ -105,7 +105,7 @@ export function findNamesNamespaceEntries(namespace: Namespace, referenceIds: st
 }
 
 /**
- * Resolve every carrier/name-token namespace entry to the reference id it was
+ * Resolve every carrier namespace entry to the reference id it was
  * seeded with. `names` and `byReference` still point at namespace process ids.
  */
 export async function resolveNamesNamespace(
@@ -150,7 +150,7 @@ export async function resolveNamesNamespaceReference(
 
 	const device = (response.headers.get('execution-device') ?? response.headers.get('device') ?? '').trim().toLowerCase();
 	const initialValue = response.headers.get('initial-value')?.trim();
-	const isCarrier = Boolean(initialValue || NAME_PROCESS_DEVICES.has(device));
+	const isCarrier = Boolean(initialValue || CARRIER_DEVICES.has(device));
 	const referenceId = initialValue || (isCarrier ? response.headers.get('reference-id')?.trim() : undefined);
 
 	if (!isCarrier) return namespaceId;
@@ -160,34 +160,34 @@ export async function resolveNamesNamespaceReference(
 	return referenceId;
 }
 
-export async function isNameTokenProcess(
+export async function isCarrierProcess(
 	id: string,
 	options: { graphql: string; fetch: typeof fetch; signal?: AbortSignal }
 ): Promise<boolean> {
 	if (!isArweaveId(id)) return false;
 	const payload = await gqlJson(options.graphql, {
-		query: `query NameTokenProcess($id: ID!) {
+		query: `query CarrierProcess($id: ID!) {
 			transaction(id: $id) { id tags { name value } }
 		}`,
 		variables: { id },
 		fetch: options.fetch,
 		signal: options.signal,
-		errorPrefix: 'name-token-process-graphql',
+		errorPrefix: 'carrier-process-graphql',
 	});
 	const tags = tagRecord(payload?.data?.transaction?.tags);
 	const device = tags['execution-device'] ?? tags.device;
-	return Boolean(device && NAME_PROCESS_DEVICES.has(device));
+	return Boolean(device && CARRIER_DEVICES.has(device));
 }
 
-export async function readNameTokenState(
+export async function readCarrierState(
 	processId: string,
 	options: {
 		provider: string;
 		fetch: typeof fetch;
 		signal?: AbortSignal;
 	}
-): Promise<ComputeResult> {
-	if (!isArweaveId(processId)) throw new TypeError('invalid-name-token-process-id');
+): Promise<CarrierReadResult> {
+	if (!isArweaveId(processId)) throw new TypeError('invalid-carrier-process-id');
 	const provider = options.provider.replace(/\/+$/, '');
 	const paths = [
 		`${provider}/${processId}~process@1.0/now&max-age=60?require-codec=json%401.0&accept-bundle=true`,
@@ -207,7 +207,7 @@ export async function readNameTokenState(
 				signal: request.signal,
 			});
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			return { state: parseNameTokenState(await response.json()), provider };
+			return { state: parseCarrierState(await response.json()), provider };
 		} catch (error) {
 			lastError = error;
 		} finally {
@@ -218,9 +218,9 @@ export async function readNameTokenState(
 	throw lastError instanceof Error ? lastError : new Error('compute-provider-failed');
 }
 
-export async function waitForNameTokenState(
+export async function waitForCarrierState(
 	processId: string,
-	accept: (state: NameTokenState) => boolean | Promise<boolean>,
+	accept: (state: CarrierState) => boolean | Promise<boolean>,
 	options: {
 		provider: string;
 		fetch: typeof fetch;
@@ -228,14 +228,14 @@ export async function waitForNameTokenState(
 		interval?: number;
 		timeout?: number;
 	}
-): Promise<ComputeResult> {
+): Promise<CarrierReadResult> {
 	const startedAt = Date.now();
 	const timeout = options.timeout ?? 180_000;
 
 	while (Date.now() - startedAt < timeout) {
 		if (options.signal?.aborted) throw options.signal.reason;
 		try {
-			const result = await readNameTokenState(processId, options);
+			const result = await readCarrierState(processId, options);
 			if (await accept(result.state)) return result;
 		} catch (error) {
 			if (options.signal?.aborted) throw error;
@@ -243,16 +243,16 @@ export async function waitForNameTokenState(
 		await delay(options.interval ?? 4000, options.signal);
 	}
 
-	throw new Error('name-token-state-timeout');
+	throw new Error('carrier-state-timeout');
 }
 
-export function parseNameTokenState(value: unknown): NameTokenState {
+export function parseCarrierState(value: unknown): CarrierState {
 	const raw = unwrapState(value);
 	const device = text(raw['execution-device'] ?? raw.device);
 	const totalSupply = integer(raw['total-supply']);
 	const balances = stringRecord(raw.balances);
-	if (!NAME_PROCESS_DEVICES.has(device) || totalSupply !== 1 || !balances) {
-		throw new TypeError('invalid-name-token-state');
+	if (!CARRIER_DEVICES.has(device) || totalSupply !== 1 || !balances) {
+		throw new TypeError('invalid-carrier-state');
 	}
 
 	const orders: Record<string, SwapOrder> = {};
@@ -322,14 +322,14 @@ export function parseSwapOrder(id: string, value: unknown): SwapOrder | null {
 	};
 }
 
-export function ownerOfNameToken(state: NameTokenState): string | null {
+export function ownerOfCarrier(state: CarrierState): string | null {
 	const holder = Object.entries(state.balances).find(([, balance]) => balance === '1');
 	if (holder && isArweaveId(holder[0])) return holder[0];
 	const escrowed = Object.values(state.orders).find((order) => LIVE_ORDER.has(order.status) && order.quantity === 1);
 	return escrowed?.creator ?? null;
 }
 
-export function nameTokenTarget(value: unknown): string {
+export function carrierTarget(value: unknown): string {
 	if (typeof value === 'string') return value;
 	if (!isRecord(value)) return '';
 	return typeof value.target === 'string'
@@ -362,7 +362,7 @@ export async function findOwnedNamesCarriers(
 		if (
 			!name ||
 			!device ||
-			!NAME_PROCESS_DEVICES.has(device) ||
+			!CARRIER_DEVICES.has(device) ||
 			tags['initial-holder'] !== initialHolder ||
 			!isArweaveId(tags['initial-value'] ?? '')
 		) {
@@ -419,17 +419,17 @@ export async function discoverOfferCandidates(
 		.filter((candidate) => processIds.has(candidate.processId));
 }
 
-export function nameTokenRecord(name: string, processId: string, state: NameTokenState): OwnedName {
+export function carrierRecord(name: string, processId: string, state: CarrierState): OwnedName {
 	return {
 		name,
 		referenceId: processId,
 		namespaceId: processId,
 		processId,
-		authority: ownerOfNameToken(state) ?? undefined,
-		value: nameTokenTarget(state.value),
-		kind: 'name-token',
+		authority: ownerOfCarrier(state) ?? undefined,
+		value: carrierTarget(state.value),
+		kind: 'carrier',
 		source: 'process',
-		tokenState: state,
+		carrierState: state,
 	};
 }
 
@@ -445,7 +445,7 @@ async function queryOwnedCarriers(
 	return queryTransactions(
 		options.graphql,
 		[
-			{ name: deviceTag, values: [...NAME_PROCESS_DEVICES] },
+			{ name: deviceTag, values: [...CARRIER_DEVICES] },
 			{ name: 'initial-holder', values: [initialHolder] },
 		],
 		options.fetch,
@@ -590,7 +590,7 @@ function unwrapState(value: unknown): Record<string, unknown> {
 		}
 		break;
 	}
-	if (!isRecord(held)) throw new TypeError('invalid-name-token-state');
+	if (!isRecord(held)) throw new TypeError('invalid-carrier-state');
 	return held;
 }
 

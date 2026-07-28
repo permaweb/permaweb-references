@@ -4,10 +4,10 @@ import {
 	findNamesNamespaceEntries,
 	findOwnedNamesCarriers,
 	findPurchasedNamesCarriers,
-	nameTokenTarget,
-	ownerOfNameToken,
+	carrierTarget,
+	ownerOfCarrier,
 	parseNamesNamespace,
-	parseNameTokenState,
+	parseCarrierState,
 	resolveNamesNamespace,
 	resolveNamesNamespaceReference,
 } from '../src/names';
@@ -59,7 +59,7 @@ describe('mainnet names namespace helpers', () => {
 		expect(namespace.byReference).toEqual({ [PROCESS]: 'alpha', [LEGACY_REFERENCE]: 'legacy' });
 	});
 
-	it('keeps direct reference entries separate from tokenized name process entries', () => {
+	it('keeps direct reference entries separate from carrier process entries', () => {
 		const namespace = parseNamesNamespace(manifest({ alpha: { id: PROCESS }, legacy: { id: LEGACY_REFERENCE } }));
 
 		expect(findNamesNamespaceEntries(namespace, [REFERENCE, LEGACY_REFERENCE])).toEqual([
@@ -73,7 +73,7 @@ describe('mainnet names namespace helpers', () => {
 			return new Response(null, {
 				status: 200,
 				headers: {
-					'execution-device': id === PROCESS ? 'carrier@1.0' : 'name-token@1.0',
+					'execution-device': 'carrier@1.0',
 					'initial-value': id === PROCESS ? REFERENCE : REFERENCE_TWO,
 				},
 			});
@@ -127,7 +127,7 @@ describe('mainnet names namespace helpers', () => {
 				});
 			}
 
-			expect(tags[0]).toMatchObject({ values: ['carrier@1.0', 'name-token@1.0'] });
+			expect(tags[0]).toMatchObject({ values: ['carrier@1.0'] });
 			return Response.json({
 				data: {
 					transactions: {
@@ -160,12 +160,12 @@ describe('mainnet names namespace helpers', () => {
 	});
 });
 
-describe('name-token state parsing', () => {
+describe('carrier state parsing', () => {
 	it('parses current carrier state and extracts owner/target', () => {
-		const parsed = parseNameTokenState({ body: JSON.stringify(state()) });
+		const parsed = parseCarrierState({ body: JSON.stringify(state()) });
 
 		expect(parsed.device).toBe('carrier@1.0');
-		expect(ownerOfNameToken(parsed)).toBe(HOLDER);
-		expect(nameTokenTarget(parsed.value)).toBe(REFERENCE);
+		expect(ownerOfCarrier(parsed)).toBe(HOLDER);
+		expect(carrierTarget(parsed.value)).toBe(REFERENCE);
 	});
 });

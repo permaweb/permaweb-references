@@ -172,7 +172,7 @@ describe('findReferences', () => {
 		});
 	});
 
-	it('resolves a namespace entry backed by a carrier/name-token process', async () => {
+	it('resolves a namespace entry backed by a carrier process', async () => {
 		const processId = 'p'.repeat(43);
 		const holder = 'h'.repeat(43);
 		const target = 't'.repeat(43);
@@ -232,7 +232,7 @@ describe('findReferences', () => {
 			processId,
 			authority: holder,
 			value: target,
-			kind: 'name-token',
+			kind: 'carrier',
 			source: 'process',
 		});
 		await expect(client.resolveName('alpha')).resolves.toBe(target);
