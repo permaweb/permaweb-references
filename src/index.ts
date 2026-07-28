@@ -4,5 +4,7 @@ export * from './identity.js';
 export * from './compute.js';
 export * from './discovery.js';
 export * from './namespace.js';
+export * from './names.js';
+export * from './carrier-transactions.js';
 export * from './signer.js';
 export * from './client.js';

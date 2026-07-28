@@ -1,10 +1,13 @@
 # @permaweb/references
 
-TypeScript SDK for Permaweb Names references.
+TypeScript client for Permaweb Names and legacy `reference@1.0` records.
 
-The SDK reads `reference@1.0` records from Arweave GraphQL, joins them with the
-current phase-2 namespace root reference, and can post reference updates through an
-Arweave bundler.
+The mainnet names namespace now points at two kinds of entries:
+
+- old `reference@1.0` ids
+- `carrier@1.0` process ids, read from a HyperBEAM node
+
+The client keeps those paths separate. Legacy references are resolved through Arweave GraphQL. Carrier-backed names are resolved from live process state.
 
 ## Install
 
@@ -12,8 +15,7 @@ Arweave bundler.
 npm install @permaweb/references
 ```
 
-Read-only usage does not need wallet dependencies. Writing with the built-in
-signers needs the optional peer packages used by that signer:
+Read-only code does not need wallet packages. The built-in signers load their peers only when used:
 
 ```bash
 npm install arweave arbundles
@@ -26,29 +28,22 @@ import { ReferenceClient } from '@permaweb/references';
 
 const names = new ReferenceClient();
 
-const refs = await names.findReferences(
+const owned = await names.findNamesByOwner(
   '8s8ABYc_1oDZ553UKXLIzsUie48xc6V88Q1hPtky4C8',
 );
 
-console.log(refs);
-// [
-//   {
-//     referenceId: '_aY3NpheRlJ4y_MInEZpzCSBHXl1hL3osyfkOSQY6Ek',
-//     name: '1984',
-//     value: 'n2ITIV8xMI2JeeABVsyUyYK0jaOSSJwu9ekxioXGbeA'
-//   }
-// ]
+const ao = await names.getName('ao');
 ```
 
-## Read References
+## Reading
 
-Resolve a namespace name to its current reference value:
+Resolve a name to its current target:
 
 ```ts
 const value = await names.resolveName('ao');
 ```
 
-Fetch full name state:
+Fetch the full name record:
 
 ```ts
 const name = await names.getName('ao');
@@ -56,54 +51,50 @@ const name = await names.getName('ao');
 // {
 //   name: string,
 //   referenceId: string,
+//   kind: 'reference' | 'carrier',
 //   authority?: string,
 //   value: unknown,
-//   timestamp: number,
-//   source: 'init' | 'set'
+//   timestamp?: number,
+//   source?: 'init' | 'set' | 'process'
 // }
 ```
 
-Resolve the current value of a reference:
+Resolve or inspect a raw legacy reference:
 
 ```ts
 const value = await names.resolveReference(referenceId);
-```
-
-Fetch full reference state:
-
-```ts
 const ref = await names.getReference(referenceId);
-
-// {
-//   id: string,
-//   authority?: string,
-//   value: unknown,
-//   timestamp: number,
-//   source: 'init' | 'set'
-// }
 ```
 
-List references controlled by a wallet:
+List legacy references controlled by an authority:
 
 ```ts
 const refs = await names.findReferences(authorityAddress);
+```
+
+`findReferences` is not an "all names" API. It only returns reference records controlled by that authority. Use the namespace manifest/state directly when you need a full namespace scan.
+
+List names controlled by a wallet in the configured namespace:
+
+```ts
+const owned = await names.findNamesByOwner(authorityAddress);
 
 // [
 //   {
+//     name: string,
 //     referenceId: string,
-//     name: string | null,
+//     namespaceId: string,
+//     kind: 'reference' | 'carrier',
 //     value: unknown,
-//     nameSource?: string,
-//     dateRegistered?: string
+//     authority?: string,
+//     processId?: string
 //   }
 // ]
 ```
 
-`findReferences` returns references controlled by an authority. It is not an
-"all names" or "all subdomains" listing API. All-name discovery should read the
-namespace manifest/state directly.
+For carrier-backed names, `findNamesByOwner` discovers candidate process ids from GraphQL, then checks live carrier state. Final ownership comes from live balances, not spawn tags.
 
-## Update References
+## Writing Legacy References
 
 ### Browser Wallet
 
@@ -134,21 +125,17 @@ await names.updateReference(referenceId, {
 });
 ```
 
-The signer must be the reference authority. The SDK checks the current reference
-authority before posting and throws without sending if the signer does not match.
+The signer must be the reference authority. `updateReference` reads the current reference first and does not post if the signer is not allowed to update it.
 
-When `timestamp` is not supplied, `updateReference` reads the current reference
-state and uses:
+When no timestamp is passed, the client uses:
 
 ```ts
 Math.max(Date.now(), latestTimestamp + 1)
 ```
 
-This keeps updates strictly newer even if the latest reference timestamp is ahead
-of the local clock or multiple updates happen close together. Pass `timestamp`
-explicitly only when you need to control the nonce yourself.
+Pass `timestamp` yourself only when you need to control that nonce.
 
-## Create References
+Create a new reference:
 
 ```ts
 const { referenceId } = await names.createReference({
@@ -156,9 +143,56 @@ const { referenceId } = await names.createReference({
 });
 ```
 
-For user-created references, `authority` defaults to the signer address. Pass an
-explicit `authority` when a bootstrap publisher is creating the reference on
-behalf of another wallet. The resulting data item ID is the reference ID.
+For user-created references, `authority` defaults to the signer address. Bootstrap publishers can pass an explicit `authority` for another wallet. The signed data item id becomes the reference id.
+
+## Writing Carriers
+
+Carrier-backed names are process transactions, not bundled reference messages. A target update is a data-free L1 Arweave transaction:
+
+```txt
+target=<process-id>
+quantity=1
+action=set
+reference-value=<new target>
+```
+
+Use the same wallet signer:
+
+```ts
+import { ReferenceClient, fromWallet } from '@permaweb/references';
+
+const names = new ReferenceClient({
+  signer: fromWallet(window.arweaveWallet),
+  gateway: 'https://arweave.net',
+  node: 'https://state-1.forward.computer',
+});
+
+await names.setCarrierTarget(processId, targetTxId);
+await names.transferCarrier(processId, recipientAddress);
+await names.makeCarrierOffer(processId, { asking: '1000000000000' });
+```
+
+`fromWallet(window.arweaveWallet)` uses `wallet.sign` for carrier calls, so it works with ArConnect/Wander-style wallets. Before posting, it checks that the signed transaction has no data and that the owner is the expected signer.
+
+Swap helpers:
+
+```ts
+await names.makeCarrierOrder(processId, { asking: '1000000000000' });
+await names.cancelCarrierOrder(processId, order.orderId);
+await names.registerCarrierInterest(processId, order);
+await names.payCarrierOrder(processId, order);
+await names.buyCarrierOrder(processId, order);
+```
+
+Before signing, carrier writes read live state from `node`:
+
+- set, transfer, and offer creation require `balances[signer] === "1"`
+- payment requires the order to be reserved for the signer
+- the reservation must cover `currentHeight + inclusionMargin`
+- open-order `buyCarrierOrder` registers interest, waits for the live reservation, then pays
+- swap transactions check wallet balance against AR quantity plus quoted L1 fees
+- `/info`, `/price/0/<target>`, and `/wallet/<address>/balance` must return valid values
+- process ids, targets, and recipients must be valid 43-character Arweave ids
 
 ## Configuration
 
@@ -166,8 +200,9 @@ behalf of another wallet. The resulting data item ID is the reference ID.
 const names = new ReferenceClient({
   gateway: 'https://arweave.net',
   graphql: 'https://arweave.net/graphql',
+  node: 'https://state-1.forward.computer',
   bundler: 'https://up.arweave.net',
-  namespace: 'w0eqd43OMzzXr-5yhFC-LkgifQqih8YEPb4mLt6VSZo',
+  namespace: 'fQXYPE9MAcfI1wV2CwJ3sJIhgT9btBOlYFOKFDGhAs0',
   trustedPublishers: [
     'uAaRGha_a1ni_VjLf9Be2SFB7NJw1PWnjevdfeuJ_7c',
   ],
@@ -175,61 +210,69 @@ const names = new ReferenceClient({
 });
 ```
 
-| Option | Default | Description |
+| Option | Default | Notes |
 | --- | --- | --- |
-| `gateway` | `https://arweave.net` | Gateway used for tx reads and raw namespace fetches. |
-| `graphql` | `${gateway}/graphql` | GraphQL endpoint used for reference discovery. |
-| `bundler` | `https://up.arweave.net` | Bundler endpoint used by the JWK signer. |
-| `namespace` | phase-2 namespace root | Namespace root reference or manifest ID used to attach names to references. Set `null` to skip name lookup. |
-| `trustedPublishers` | phase-2 bootstrap publisher | Publishers accepted for authority-tagged bootstrap reference inits. |
-| `signer` | none | Required only for create/update operations. |
-| `fetch` | global `fetch` | Custom fetch implementation for runtimes or tests. |
+| `gateway` | `https://arweave.net` | Transaction reads, raw namespace fetches, L1 transaction posts, fee quotes, and wallet balance checks. |
+| `graphql` | `${gateway}/graphql` | Reference and carrier discovery. |
+| `node` | `gateway` | HyperBEAM/gateway origin for carrier state reads. |
+| `bundler` | `https://up.arweave.net` | Used by JWK reference writes. |
+| `namespace` | mainnet names namespace root | Set `null` to skip name lookup. |
+| `trustedPublishers` | phase-2 bootstrap publisher | Accepted publishers for authority-tagged bootstrap reference inits. |
+| `signer` | none | Required for writes. |
+| `fetch` | global `fetch` | Pass one in runtimes without a global fetch, or in tests. |
+
+## Mainnet Namespace
+
+Default namespace:
+
+```txt
+fQXYPE9MAcfI1wV2CwJ3sJIhgT9btBOlYFOKFDGhAs0
+```
+
+For carrier-backed names, the namespace manifest maps `name -> process id`. The client checks that the process was spawned with `carrier@1.0`, then reads:
+
+```txt
+/<process-id>~process@1.0/compute
+```
+
+The current holder is the address with balance `1`. If the unit is escrowed in a live swap order, the seller is treated as the owner until settlement.
 
 ## Phase-2 Trust Model
 
-Phase-2 references are bootstrap-published, but user-controlled:
+Phase-2 references were bootstrap-published, but remain user-controlled:
 
 ```txt
 owner.address = trusted bootstrap publisher
 authority tag = user wallet
 ```
 
-By default, the trusted bootstrap publisher is:
+Default trusted publisher:
 
 ```txt
 uAaRGha_a1ni_VjLf9Be2SFB7NJw1PWnjevdfeuJ_7c
 ```
 
-`findReferences(authority)` accepts a reference init when:
+`findReferences(authority)` accepts an init when the authority tag matches the requested authority and the owner is either the requested authority or a trusted bootstrap publisher.
 
-```txt
-authority tag == requested authority
-AND
-owner.address is either:
-  - a trusted bootstrap publisher, or
-  - the requested authority
-```
-
-This supports the current phase-2 bootstrap and future direct user-published
-references while rejecting authority-tagged references from unknown publishers.
-
-Reference and update discovery request 100 GraphQL edges per page and scan up to
-100 pages by default. Low-level discovery helpers accept `maxPages` when a
-caller wants a different scan cap.
+Discovery reads 100 GraphQL edges per page and scans up to 100 pages by default. Low-level discovery helpers accept `maxPages` when callers need a different cap.
 
 ## Low-Level Exports
 
-The package also exports the pure pieces used by `ReferenceClient`:
+The package exports the pure helpers used by `ReferenceClient`:
 
 ```ts
 import {
   buildInit,
   buildSet,
+  buildCarrierSetTarget,
+  buildCarrierTransfer,
   currentState,
   effectiveValue,
   discoverSets,
   discoverReferencesByAuthority,
   fetchMessageById,
+  parseNamesNamespace,
+  readCarrierState,
 } from '@permaweb/references';
 ```
 
@@ -241,5 +284,7 @@ npm run typecheck
 npm test
 npm run build
 ```
+
 ## License
-This repository is license under the [MIT License](./LICENSE)
+
+MIT
