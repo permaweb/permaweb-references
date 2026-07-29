@@ -14,7 +14,7 @@ import {
 	resolveNamesNamespaceReference,
 	waitForCarrierState,
 } from './names.js';
-import type { CarrierState, SwapOrder } from './names.js';
+import type { CarrierReadPathOption, CarrierState, SwapOrder } from './names.js';
 import {
 	DEFAULT_CARRIER_RESERVATION_INCLUSION_MARGIN,
 	assertSafeCarrierPurchaseOrder,
@@ -46,6 +46,8 @@ export interface ReferenceClientConfig {
 	namespace?: string | null;
 	/** HyperBEAM/gateway node origin used to read carrier process state. */
 	node?: string;
+	/** Carrier process read path(s). Default tries `now`, then `compute`. */
+	carrierReadPath?: CarrierReadPathOption;
 	/** Trusted bootstrap publishers for authority-tagged reference inits. */
 	trustedPublishers?: Address[];
 	/** Signer for the update path (fromWallet / fromJwk). Required only for writes. */
@@ -76,6 +78,7 @@ export class ReferenceClient {
 	readonly trustedPublishers: Address[];
 	readonly signer?: Signer;
 	private readonly fetchImpl: typeof fetch;
+	private readonly carrierReadPath?: CarrierReadPathOption;
 	private namespaceMemo?: Promise<Namespace>;
 
 	constructor(config: ReferenceClientConfig = {}) {
@@ -84,6 +87,7 @@ export class ReferenceClient {
 		this.bundler = (config.bundler ?? DEFAULTS.bundler).replace(/\/+$/, '');
 		this.namespace = config.namespace === undefined ? MAINNET_NAMES_NAMESPACE : config.namespace;
 		this.node = (config.node ?? this.gateway).replace(/\/+$/, '');
+		this.carrierReadPath = config.carrierReadPath;
 		this.trustedPublishers = config.trustedPublishers ?? [PHASE2_BOOTSTRAP_OWNER];
 		this.signer = config.signer;
 		const f = config.fetch ?? (globalThis.fetch as typeof fetch | undefined);
@@ -123,7 +127,11 @@ export class ReferenceClient {
 		const namespaceId = ns?.names[name];
 		if (!namespaceId) return undefined;
 		if (await isCarrierProcess(namespaceId, { graphql: this.graphql, fetch: this.fetchImpl })) {
-			const { state } = await readCarrierState(namespaceId, { provider: this.node, fetch: this.fetchImpl });
+			const { state } = await readCarrierState(namespaceId, {
+				provider: this.node,
+				fetch: this.fetchImpl,
+				path: this.carrierReadPath,
+			});
 			return carrierRecord(name, namespaceId, state);
 		}
 		const referenceId = await resolveNamesNamespaceReference(namespaceId, {
@@ -228,6 +236,7 @@ export class ReferenceClient {
 				const { state } = await readCarrierState(candidate.processId, {
 					provider: this.node,
 					fetch: this.fetchImpl,
+					path: this.carrierReadPath,
 				});
 				const record = carrierRecord(candidate.name, candidate.processId, state);
 				return record.authority === authority ? record : null;
@@ -336,6 +345,7 @@ export class ReferenceClient {
 		const { state } = await readCarrierState(processId, {
 			provider: this.node,
 			fetch: this.fetchImpl,
+			path: this.carrierReadPath,
 		});
 		return state;
 	}
@@ -549,6 +559,7 @@ export class ReferenceClient {
 			{
 				provider: this.node,
 				fetch: this.fetchImpl,
+				path: this.carrierReadPath,
 				timeout: opts.reservationTimeout,
 				interval: opts.reservationInterval,
 			}

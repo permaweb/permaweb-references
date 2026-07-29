@@ -9,6 +9,7 @@ const GRAPHQL_PAGE_SIZE = 100;
 const GRAPHQL_MAX_PAGES = 100;
 const CARRIER_LOOKUP_CONCURRENCY = 8;
 const COMPUTE_TIMEOUT = 12_000;
+const DEFAULT_CARRIER_READ_PATHS = ['now', 'compute'] as const;
 
 export type NamesNamespace = Namespace & {
 	/** name -> reference id carried by a carrier process */
@@ -64,7 +65,11 @@ export type CarrierState = {
 export type CarrierReadResult = {
 	state: CarrierState;
 	provider: string;
+	path: CarrierReadPath;
 };
+
+export type CarrierReadPath = 'now' | 'compute';
+export type CarrierReadPathOption = CarrierReadPath | readonly CarrierReadPath[];
 
 export type OfferCandidate = {
 	id: string;
@@ -186,20 +191,18 @@ export async function readCarrierState(
 		fetch: typeof fetch;
 		signal?: AbortSignal;
 		requestTimeout?: number;
+		path?: CarrierReadPathOption;
 	}
 ): Promise<CarrierReadResult> {
 	if (!isArweaveId(processId)) throw new TypeError('invalid-carrier-process-id');
 	const provider = options.provider.replace(/\/+$/, '');
-	const paths = [
-		`${provider}/${processId}~process@1.0/compute&max-age=60?require-codec=json%401.0&accept-bundle=true`,
-		`${provider}/${processId}~process@1.0/now&max-age=60?require-codec=json%401.0&accept-bundle=true`,
-	];
+	const paths = normalizeCarrierReadPaths(options.path);
 	let lastError: unknown;
 
 	for (const path of paths) {
 		const request = timeoutSignal(options.signal, options.requestTimeout ?? COMPUTE_TIMEOUT);
 		try {
-			const response = await options.fetch(path, {
+			const response = await options.fetch(carrierReadUrl(provider, processId, path), {
 				headers: {
 					accept: 'application/json',
 					'require-codec': 'application/json',
@@ -208,7 +211,7 @@ export async function readCarrierState(
 				signal: request.signal,
 			});
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			return { state: parseCarrierState(await response.json()), provider };
+			return { state: parseCarrierState(await response.json()), provider, path };
 		} catch (error) {
 			lastError = error;
 		} finally {
@@ -229,6 +232,7 @@ export async function waitForCarrierState(
 		interval?: number;
 		timeout?: number;
 		requestTimeout?: number;
+		path?: CarrierReadPathOption;
 	}
 ): Promise<CarrierReadResult> {
 	const startedAt = Date.now();
@@ -625,6 +629,21 @@ function text(value: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function normalizeCarrierReadPaths(path: CarrierReadPathOption | undefined): CarrierReadPath[] {
+	const paths = path === undefined ? DEFAULT_CARRIER_READ_PATHS : Array.isArray(path) ? path : [path];
+	const unique: CarrierReadPath[] = [];
+	for (const held of paths) {
+		if (held !== 'now' && held !== 'compute') throw new TypeError('invalid-carrier-read-path');
+		if (!unique.includes(held)) unique.push(held);
+	}
+	if (!unique.length) throw new TypeError('invalid-carrier-read-path');
+	return unique;
+}
+
+function carrierReadUrl(provider: string, processId: string, path: CarrierReadPath): string {
+	return `${provider}/${processId}~process@1.0/${path}&max-age=60?require-codec=json%401.0&accept-bundle=true`;
 }
 
 function timeoutSignal(parent: AbortSignal | undefined, timeout: number): { signal: AbortSignal; cleanup: () => void } {

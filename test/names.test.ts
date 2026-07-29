@@ -8,6 +8,7 @@ import {
 	ownerOfCarrier,
 	parseNamesNamespace,
 	parseCarrierState,
+	readCarrierState,
 	resolveNamesNamespace,
 	resolveNamesNamespaceReference,
 } from '../src/names';
@@ -167,5 +168,55 @@ describe('carrier state parsing', () => {
 		expect(parsed.device).toBe('carrier@1.0');
 		expect(ownerOfCarrier(parsed)).toBe(HOLDER);
 		expect(carrierTarget(parsed.value)).toBe(REFERENCE);
+	});
+});
+
+describe('carrier state reads', () => {
+	it('reads /now first by default', async () => {
+		const urls: string[] = [];
+		const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+			urls.push(String(input));
+			return Response.json(state());
+		});
+
+		const result = await readCarrierState(PROCESS, { provider: 'https://node.test/', fetch: fetcher });
+
+		expect(result.path).toBe('now');
+		expect(urls[0]).toBe(
+			`https://node.test/${PROCESS}~process@1.0/now&max-age=60?require-codec=json%401.0&accept-bundle=true`
+		);
+	});
+
+	it('falls back to /compute when /now fails', async () => {
+		const urls: string[] = [];
+		const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+			urls.push(String(input));
+			return urls.length === 1 ? new Response('timeout', { status: 504 }) : Response.json(state());
+		});
+
+		const result = await readCarrierState(PROCESS, { provider: 'https://node.test', fetch: fetcher });
+
+		expect(result.path).toBe('compute');
+		expect(fetcher).toHaveBeenCalledTimes(2);
+		expect(urls[0]).toContain('/now&max-age=60');
+		expect(urls[1]).toContain('/compute&max-age=60');
+	});
+
+	it('can force a single carrier read path', async () => {
+		const urls: string[] = [];
+		const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+			urls.push(String(input));
+			return Response.json(state());
+		});
+
+		const result = await readCarrierState(PROCESS, {
+			provider: 'https://node.test',
+			fetch: fetcher,
+			path: 'compute',
+		});
+
+		expect(result.path).toBe('compute');
+		expect(fetcher).toHaveBeenCalledTimes(1);
+		expect(urls[0]).toContain('/compute&max-age=60');
 	});
 });
