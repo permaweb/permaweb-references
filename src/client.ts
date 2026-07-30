@@ -10,11 +10,13 @@ import {
 	findPurchasedNamesCarriers,
 	carrierRecord,
 	isCarrierProcess,
+	listMarketplaceListings as listCarrierMarketplaceListings,
 	readCarrierState,
 	resolveNamesNamespaceReference,
+	streamMarketplaceListings as streamCarrierMarketplaceListings,
 	waitForCarrierState,
 } from './names.js';
-import type { CarrierReadPathOption, CarrierState, SwapOrder } from './names.js';
+import type { CarrierReadPathOption, CarrierState, MarketplaceListing, SwapOrder } from './names.js';
 import {
 	DEFAULT_CARRIER_RESERVATION_INCLUSION_MARGIN,
 	assertSafeCarrierPurchaseOrder,
@@ -245,6 +247,49 @@ export class ReferenceClient {
 
 		const records = [...referenceRecords, ...carrierRecords].filter((record): record is OwnedName => record !== null);
 		return records.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	/** List live marketplace orders from the configured names namespace. */
+	async listMarketplaceListings(
+		options: {
+			signal?: AbortSignal;
+			concurrency?: number;
+			requestTimeout?: number;
+			carrierReadPath?: CarrierReadPathOption;
+		} = {}
+	): Promise<MarketplaceListing[]> {
+		const ns = await this.loadNamespace();
+		return listCarrierMarketplaceListings(ns?.names ?? {}, {
+			graphql: this.graphql,
+			provider: this.node,
+			fetch: this.fetchImpl,
+			signal: options.signal,
+			concurrency: options.concurrency,
+			requestTimeout: options.requestTimeout,
+			path: options.carrierReadPath ?? this.carrierReadPath,
+		});
+	}
+
+	/** Stream marketplace hydration progress; the final result contains ready listings only. */
+	async streamMarketplaceListings(
+		onUpdate: (listings: MarketplaceListing[]) => void,
+		options: {
+			signal?: AbortSignal;
+			concurrency?: number;
+			requestTimeout?: number;
+			carrierReadPath?: CarrierReadPathOption;
+		} = {}
+	): Promise<MarketplaceListing[]> {
+		const ns = await this.loadNamespace();
+		return streamCarrierMarketplaceListings(ns?.names ?? {}, onUpdate, {
+			graphql: this.graphql,
+			provider: this.node,
+			fetch: this.fetchImpl,
+			signal: options.signal,
+			concurrency: options.concurrency,
+			requestTimeout: options.requestTimeout,
+			path: options.carrierReadPath ?? this.carrierReadPath,
+		});
 	}
 
 	/** Fetch a raw document by id via /raw/ (so a manifest is returned, not resolved). */

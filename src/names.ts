@@ -82,6 +82,30 @@ export type OfferCandidate = {
 	deadline: number;
 };
 
+export type MarketplaceListingStatus = 'resolving' | 'ready' | 'unavailable';
+
+export type MarketplaceListing = {
+	name: string;
+	processId: string;
+	status: MarketplaceListingStatus;
+	candidate: OfferCandidate;
+	order?: SwapOrder;
+	state?: CarrierState;
+	provider?: string;
+	path?: CarrierReadPath;
+	error?: string;
+};
+
+export type MarketplaceListingsOptions = {
+	graphql: string;
+	provider: string;
+	fetch: typeof fetch;
+	signal?: AbortSignal;
+	concurrency?: number;
+	requestTimeout?: number;
+	path?: CarrierReadPathOption;
+};
+
 type GraphqlTag = { name: string; value: string };
 type GraphqlNode = {
 	id: string;
@@ -425,6 +449,117 @@ export async function discoverOfferCandidates(
 		.filter((candidate) => processIds.has(candidate.processId));
 }
 
+export async function listMarketplaceListings(
+	namespaceNames: Record<string, string> | Promise<Record<string, string>>,
+	options: MarketplaceListingsOptions
+): Promise<MarketplaceListing[]> {
+	return streamMarketplaceListings(namespaceNames, () => undefined, options);
+}
+
+export async function streamMarketplaceListings(
+	namespaceNames: Record<string, string> | Promise<Record<string, string>>,
+	onUpdate: (listings: MarketplaceListing[]) => void,
+	options: MarketplaceListingsOptions
+): Promise<MarketplaceListing[]> {
+	const resolvedNamespace = await Promise.resolve(namespaceNames);
+	const candidates = await discoverOfferCandidates(resolvedNamespace, {
+		graphql: options.graphql,
+		fetch: options.fetch,
+		signal: options.signal,
+	});
+	const namesByProcess = reverseNamespace(resolvedNamespace);
+	const groups = new Map<string, OfferCandidate[]>();
+
+	for (const candidate of candidates) {
+		const held = groups.get(candidate.processId) ?? [];
+		held.push(candidate);
+		groups.set(candidate.processId, held);
+	}
+
+	const work: Array<{ name: string; processId: string; candidates: OfferCandidate[]; candidate: OfferCandidate }> = [];
+	for (const [processId, held] of groups) {
+		const name = namesByProcess[processId];
+		const candidate = held[0];
+		if (!name || !candidate) continue;
+		work.push({ name, processId, candidates: held, candidate });
+	}
+
+	let listings: MarketplaceListing[] = work.map(({ name, processId, candidate }) => ({
+		name,
+		processId,
+		status: 'resolving',
+		candidate,
+	}));
+	onUpdate([...listings]);
+
+	let cursor = 0;
+	const concurrency = normalizeConcurrency(options.concurrency ?? 4);
+	const workers = Array.from({ length: Math.min(concurrency, work.length) }, async () => {
+		while (cursor < work.length) {
+			if (options.signal?.aborted) throw options.signal.reason;
+			const index = cursor;
+			cursor += 1;
+			const item = work[index];
+			if (!item) continue;
+			const { name, processId, candidates: held, candidate: firstCandidate } = item;
+			let next: MarketplaceListing;
+			try {
+				const result = await readCarrierState(processId, {
+					provider: options.provider,
+					fetch: options.fetch,
+					signal: options.signal,
+					requestTimeout: options.requestTimeout,
+					path: options.path,
+				});
+				const candidate = held.find((entry) => isLiveOfferCandidate(result.state, entry));
+				if (!candidate) {
+					next = { name, processId, status: 'unavailable', candidate: firstCandidate };
+				} else {
+					next = {
+						name,
+						processId,
+						status: 'ready',
+						candidate,
+						order: result.state.orders[candidate.id],
+						state: result.state,
+						provider: result.provider,
+						path: result.path,
+					};
+				}
+			} catch (error) {
+				next = {
+					name,
+					processId,
+					status: 'unavailable',
+					candidate: firstCandidate,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+
+			listings = listings.map((listing) => (listing.processId === processId ? next : listing));
+			onUpdate([...listings]);
+		}
+	});
+	await Promise.all(workers);
+
+	return listings.filter((listing) => listing.status === 'ready');
+}
+
+export function isLiveOfferCandidate(state: CarrierState, candidate: OfferCandidate): boolean {
+	const order = state.orders[candidate.id];
+	return Boolean(
+		order &&
+			LIVE_ORDER.has(order.status) &&
+			order.quantity === 1 &&
+			order.deadline > state.swapHeight &&
+			state.balances[order.creator] === '0' &&
+			order.creator === candidate.creator &&
+			order.asking === candidate.asking &&
+			order.minimumFee === candidate.minimumFee &&
+			order.deadline === candidate.deadline
+	);
+}
+
 export function carrierRecord(name: string, processId: string, state: CarrierState): OwnedName {
 	return {
 		name,
@@ -549,6 +684,12 @@ function toOfferCandidate(node: GraphqlNode): OfferCandidate | null {
 	};
 }
 
+function reverseNamespace(names: Record<string, string>): Record<string, string> {
+	const reversed: Record<string, string> = {};
+	for (const [name, id] of Object.entries(names)) reversed[id] = name;
+	return reversed;
+}
+
 async function gqlJson(
 	endpoint: string,
 	args: {
@@ -640,6 +781,11 @@ function normalizeCarrierReadPaths(path: CarrierReadPathOption | undefined): Car
 	}
 	if (!unique.length) throw new TypeError('invalid-carrier-read-path');
 	return unique;
+}
+
+function normalizeConcurrency(value: number): number {
+	if (!Number.isSafeInteger(value) || value < 1) throw new TypeError('invalid-marketplace-listing-concurrency');
+	return value;
 }
 
 function carrierReadUrl(provider: string, processId: string, path: CarrierReadPath): string {
