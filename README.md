@@ -179,6 +179,9 @@ Swap helpers:
 ```ts
 await names.makeCarrierOrder(processId, { asking: '1000000000000' });
 await names.cancelCarrierOrder(processId, order.orderId);
+const costs = await names.estimateCarrierPurchaseCosts(order, processId);
+const balance = await names.walletBalance(buyerAddress);
+const reservationId = await names.findCarrierReservationTransaction(processId, order.orderId, buyerAddress);
 await names.registerCarrierInterest(processId, order);
 await names.payCarrierOrder(processId, order);
 await names.buyCarrierOrder(processId, order);
@@ -215,6 +218,7 @@ const names = new ReferenceClient({
 | `gateway` | `https://arweave.net` | Transaction reads, raw namespace fetches, L1 transaction posts, fee quotes, and wallet balance checks. |
 | `graphql` | `${gateway}/graphql` | Reference and carrier discovery. |
 | `node` | `gateway` | HyperBEAM/gateway origin for carrier state reads. |
+| `carrierReadPath` | `['now', 'compute']` | Carrier process state path or ordered fallback paths. |
 | `bundler` | `https://up.arweave.net` | Used by JWK reference writes. |
 | `namespace` | mainnet names namespace root | Set `null` to skip name lookup. |
 | `trustedPublishers` | phase-2 bootstrap publisher | Accepted publishers for authority-tagged bootstrap reference inits. |
@@ -232,8 +236,12 @@ fQXYPE9MAcfI1wV2CwJ3sJIhgT9btBOlYFOKFDGhAs0
 For carrier-backed names, the namespace manifest maps `name -> process id`. The client checks that the process was spawned with `carrier@1.0`, then reads:
 
 ```txt
-/<process-id>~process@1.0/compute
+/<process-id>~process@1.0/now
 ```
+
+If `/now` fails, the default reader tries `/compute`. To force one path, pass `carrierReadPath: 'now'` or call `readCarrierState(processId, { provider, fetch, path: 'now' })`.
+
+Marketplace listing hydration retries carrier reads by default. Pass `maxAttempts`, `retryBaseDelay`, or `onRetry` when you want tighter control or progress updates.
 
 The current holder is the address with balance `1`. If the unit is escrowed in a live swap order, the seller is treated as the owner until settlement.
 
@@ -271,8 +279,11 @@ import {
   discoverSets,
   discoverReferencesByAuthority,
   fetchMessageById,
+  findReservationTransaction,
+  normalizeServingNodeOrigin,
   parseNamesNamespace,
   readCarrierState,
+  servingNodeOrigin,
 } from '@permaweb/references';
 ```
 

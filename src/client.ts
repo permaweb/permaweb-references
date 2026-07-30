@@ -9,12 +9,22 @@ import {
 	findOwnedNamesCarriers,
 	findPurchasedNamesCarriers,
 	carrierRecord,
+	findReservationTransaction as findCarrierReservationTransaction,
+	isArweaveId,
 	isCarrierProcess,
+	listMarketplaceListings as listCarrierMarketplaceListings,
 	readCarrierState,
 	resolveNamesNamespaceReference,
+	streamMarketplaceListings as streamCarrierMarketplaceListings,
 	waitForCarrierState,
 } from './names.js';
-import type { CarrierState, SwapOrder } from './names.js';
+import type {
+	CarrierReadPathOption,
+	CarrierState,
+	MarketplaceListing,
+	MarketplaceListingRetryProgress,
+	SwapOrder,
+} from './names.js';
 import {
 	DEFAULT_CARRIER_RESERVATION_INCLUSION_MARGIN,
 	assertSafeCarrierPurchaseOrder,
@@ -46,6 +56,8 @@ export interface ReferenceClientConfig {
 	namespace?: string | null;
 	/** HyperBEAM/gateway node origin used to read carrier process state. */
 	node?: string;
+	/** Carrier process read path(s). Default tries `now`, then `compute`. */
+	carrierReadPath?: CarrierReadPathOption;
 	/** Trusted bootstrap publishers for authority-tagged reference inits. */
 	trustedPublishers?: Address[];
 	/** Signer for the update path (fromWallet / fromJwk). Required only for writes. */
@@ -53,6 +65,14 @@ export interface ReferenceClientConfig {
 	/** fetch implementation; defaults to the global. Pass one where there is none. */
 	fetch?: typeof fetch;
 }
+
+export type CarrierPurchaseCostEstimate = {
+	asking: string;
+	registrationFee: string;
+	registrationNetworkReward: string;
+	paymentNetworkReward: string;
+	total: string;
+};
 
 const DEFAULTS = {
 	gateway: 'https://arweave.net',
@@ -76,6 +96,7 @@ export class ReferenceClient {
 	readonly trustedPublishers: Address[];
 	readonly signer?: Signer;
 	private readonly fetchImpl: typeof fetch;
+	private readonly carrierReadPath?: CarrierReadPathOption;
 	private namespaceMemo?: Promise<Namespace>;
 
 	constructor(config: ReferenceClientConfig = {}) {
@@ -84,6 +105,7 @@ export class ReferenceClient {
 		this.bundler = (config.bundler ?? DEFAULTS.bundler).replace(/\/+$/, '');
 		this.namespace = config.namespace === undefined ? MAINNET_NAMES_NAMESPACE : config.namespace;
 		this.node = (config.node ?? this.gateway).replace(/\/+$/, '');
+		this.carrierReadPath = config.carrierReadPath;
 		this.trustedPublishers = config.trustedPublishers ?? [PHASE2_BOOTSTRAP_OWNER];
 		this.signer = config.signer;
 		const f = config.fetch ?? (globalThis.fetch as typeof fetch | undefined);
@@ -123,7 +145,11 @@ export class ReferenceClient {
 		const namespaceId = ns?.names[name];
 		if (!namespaceId) return undefined;
 		if (await isCarrierProcess(namespaceId, { graphql: this.graphql, fetch: this.fetchImpl })) {
-			const { state } = await readCarrierState(namespaceId, { provider: this.node, fetch: this.fetchImpl });
+			const { state } = await readCarrierState(namespaceId, {
+				provider: this.node,
+				fetch: this.fetchImpl,
+				path: this.carrierReadPath,
+			});
 			return carrierRecord(name, namespaceId, state);
 		}
 		const referenceId = await resolveNamesNamespaceReference(namespaceId, {
@@ -228,6 +254,7 @@ export class ReferenceClient {
 				const { state } = await readCarrierState(candidate.processId, {
 					provider: this.node,
 					fetch: this.fetchImpl,
+					path: this.carrierReadPath,
 				});
 				const record = carrierRecord(candidate.name, candidate.processId, state);
 				return record.authority === authority ? record : null;
@@ -236,6 +263,101 @@ export class ReferenceClient {
 
 		const records = [...referenceRecords, ...carrierRecords].filter((record): record is OwnedName => record !== null);
 		return records.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	/** List live marketplace orders from the configured names namespace. */
+	async listMarketplaceListings(
+		options: {
+			signal?: AbortSignal;
+			concurrency?: number;
+			requestTimeout?: number;
+			carrierReadPath?: CarrierReadPathOption;
+			maxAttempts?: number;
+			retryBaseDelay?: number;
+			onRetry?: (progress: MarketplaceListingRetryProgress) => void;
+		} = {}
+	): Promise<MarketplaceListing[]> {
+		const ns = await this.loadNamespace();
+		return listCarrierMarketplaceListings(ns?.names ?? {}, {
+			graphql: this.graphql,
+			provider: this.node,
+			fetch: this.fetchImpl,
+			signal: options.signal,
+			concurrency: options.concurrency,
+			requestTimeout: options.requestTimeout,
+			path: options.carrierReadPath ?? this.carrierReadPath,
+			maxAttempts: options.maxAttempts,
+			retryBaseDelay: options.retryBaseDelay,
+			onRetry: options.onRetry,
+		});
+	}
+
+	/** Stream marketplace hydration progress; the final result contains ready listings only. */
+	async streamMarketplaceListings(
+		onUpdate: (listings: MarketplaceListing[]) => void,
+		options: {
+			signal?: AbortSignal;
+			concurrency?: number;
+			requestTimeout?: number;
+			carrierReadPath?: CarrierReadPathOption;
+			maxAttempts?: number;
+			retryBaseDelay?: number;
+			onRetry?: (progress: MarketplaceListingRetryProgress) => void;
+		} = {}
+	): Promise<MarketplaceListing[]> {
+		const ns = await this.loadNamespace();
+		return streamCarrierMarketplaceListings(ns?.names ?? {}, onUpdate, {
+			graphql: this.graphql,
+			provider: this.node,
+			fetch: this.fetchImpl,
+			signal: options.signal,
+			concurrency: options.concurrency,
+			requestTimeout: options.requestTimeout,
+			path: options.carrierReadPath ?? this.carrierReadPath,
+			maxAttempts: options.maxAttempts,
+			retryBaseDelay: options.retryBaseDelay,
+			onRetry: options.onRetry,
+		});
+	}
+
+	async findCarrierReservationTransaction(
+		processId: string,
+		orderId: string,
+		buyer: string,
+		options: { signal?: AbortSignal } = {}
+	): Promise<string | null> {
+		return findCarrierReservationTransaction(processId, orderId, buyer, {
+			graphql: this.graphql,
+			fetch: this.fetchImpl,
+			signal: options.signal,
+		});
+	}
+
+	async walletBalance(address: string): Promise<bigint> {
+		if (!isArweaveId(address)) throw new TypeError('invalid-wallet-address');
+		return this.fetchWalletBalance(address);
+	}
+
+	async estimateCarrierPurchaseCost(order: SwapOrder, processId: string): Promise<bigint> {
+		return BigInt((await this.estimateCarrierPurchaseCosts(order, processId)).total);
+	}
+
+	async estimateCarrierPurchaseCosts(order: SwapOrder, processId: string): Promise<CarrierPurchaseCostEstimate> {
+		if (!isArweaveId(processId)) throw new TypeError('invalid-carrier-process-id');
+		assertSafeCarrierPurchaseOrder(order);
+		const [registrationNetworkReward, paymentNetworkReward] = await Promise.all([
+			this.fetchGatewayAmount(`/price/0/${processId}`, 'transaction price'),
+			this.fetchGatewayAmount(`/price/0/${order.recipient}`, 'transaction price'),
+		]);
+		const asking = BigInt(order.asking);
+		const registrationFee = BigInt(order.minimumFee);
+		return {
+			asking: order.asking,
+			registrationFee: order.minimumFee,
+			registrationNetworkReward: registrationNetworkReward.toString(),
+			paymentNetworkReward: paymentNetworkReward.toString(),
+			total: (asking + maxBigInt(registrationNetworkReward, registrationFee) + paymentNetworkReward).toString(),
+		};
 	}
 
 	/** Fetch a raw document by id via /raw/ (so a manifest is returned, not resolved). */
@@ -336,6 +458,7 @@ export class ReferenceClient {
 		const { state } = await readCarrierState(processId, {
 			provider: this.node,
 			fetch: this.fetchImpl,
+			path: this.carrierReadPath,
 		});
 		return state;
 	}
@@ -447,20 +570,19 @@ export class ReferenceClient {
 	/** Create a live swap order for a carrier. Requires the signer to hold the carrier unit now. */
 	async makeCarrierOffer(
 		processId: string,
-		opts: { asking: AmountLike; currentHeight?: number; minimumFee?: AmountLike; deadline?: number }
+		opts: { asking: AmountLike; minimumFee?: AmountLike; deadline?: number }
 	): Promise<{ id: string }> {
 		const signer = this.requireTransactionSigner();
 		const { signerAddress, state } = await this.requireCarrierHolder(processId, signer);
 		const liveOrder = Object.values(state.orders).find((order) => order.quantity === 1 && (order.status === 'open' || order.status === 'reserved'));
 		if (liveOrder) throw new Error(`carrier already has a live order: ${liveOrder.orderId}`);
-		const currentHeight = await this.carrierTip(state, opts.currentHeight);
-		return this.sendCarrierTransaction(signer, signerAddress, buildCarrierMakeOffer(processId, { ...opts, currentHeight }));
+		return this.sendCarrierTransaction(signer, signerAddress, buildCarrierMakeOffer(processId, opts));
 	}
 
 	/** Alias for the swap terminology used in the carrier process. */
 	async makeCarrierOrder(
 		processId: string,
-		opts: { asking: AmountLike; currentHeight?: number; minimumFee?: AmountLike; deadline?: number }
+		opts: { asking: AmountLike; minimumFee?: AmountLike; deadline?: number }
 	): Promise<{ id: string }> {
 		return this.makeCarrierOffer(processId, opts);
 	}
@@ -549,6 +671,7 @@ export class ReferenceClient {
 			{
 				provider: this.node,
 				fetch: this.fetchImpl,
+				path: this.carrierReadPath,
 				timeout: opts.reservationTimeout,
 				interval: opts.reservationInterval,
 			}
@@ -598,4 +721,8 @@ export class ReferenceClient {
 function amountToBigInt(value: string, description: string): bigint {
 	if (!UNSIGNED_WINSTON.test(value)) throw new Error(`${description} is invalid`);
 	return BigInt(value);
+}
+
+function maxBigInt(left: bigint, right: bigint): bigint {
+	return left > right ? left : right;
 }

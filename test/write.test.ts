@@ -274,10 +274,11 @@ describe('carrier process writes', () => {
 		expect(s.txs).toEqual([]);
 	});
 
-	it('makes an offer only from live holder state and a valid current height', async () => {
+	it('makes an offer only from live holder state with a relative deadline', async () => {
 		const s = stub(HOLDER);
+		const fetcher = vi.fn(carrierFetch([carrierState()], { height: 120 }));
 		const client = new ReferenceClient({
-			fetch: carrierFetch([carrierState()], { height: 120 }),
+			fetch: fetcher,
 			signer: s.signer,
 		});
 
@@ -289,22 +290,57 @@ describe('carrier process writes', () => {
 			asking: '1000',
 			deposit: '0',
 			'minimum-fee': '100000000',
-			deadline: String(120 + 21600),
+			deadline: '20',
 		});
+		expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/info'))).toBe(false);
 	});
 
-	it('fails closed when gateway height lookup is malformed', async () => {
+	it('rejects invalid relative offer deadlines before signing', async () => {
 		const s = stub(HOLDER);
-		const fetcher = (async (url: string) => {
-			const held = String(url);
-			if (held.includes('~process@1.0/')) return new Response(JSON.stringify(carrierState()), { status: 200 });
-			if (held.endsWith('/info')) return new Response(JSON.stringify({ height: 'bad' }), { status: 200 });
-			return new Response('5', { status: 200 });
-		}) as unknown as typeof fetch;
-		const client = new ReferenceClient({ fetch: fetcher, signer: s.signer });
+		const client = new ReferenceClient({ fetch: carrierFetch([carrierState()]), signer: s.signer });
 
-		await expect(client.makeCarrierOffer(PROCESS, { asking: '1000' })).rejects.toThrow(/valid height/);
+		await expect(client.makeCarrierOffer(PROCESS, { asking: '1000', deadline: 0 })).rejects.toThrow(/deadline/);
 		expect(s.txs).toEqual([]);
+	});
+
+	it('quotes purchase costs and wallet balance from the configured gateway', async () => {
+		const client = new ReferenceClient({
+			fetch: carrierFetch([], { price: '7', balance: '123' }),
+		});
+
+		await expect(client.walletBalance(BUYER)).resolves.toBe(123n);
+		await expect(client.estimateCarrierPurchaseCosts(carrierOrder(), PROCESS)).resolves.toEqual({
+			asking: '100',
+			registrationFee: '9',
+			registrationNetworkReward: '7',
+			paymentNetworkReward: '7',
+			total: '116',
+		});
+		await expect(client.estimateCarrierPurchaseCost(carrierOrder(), PROCESS)).resolves.toBe(116n);
+	});
+
+	it('looks up existing reservation transactions through the configured GraphQL endpoint', async () => {
+		const reservation = 'x'.repeat(43);
+		const fetcher = vi.fn(async (_url: string, req?: RequestInit) => {
+			const body = JSON.parse(String(req?.body));
+			expect(body.variables.tags).toEqual([
+				{ name: 'action', values: ['register-interest'] },
+				{ name: 'order-id', values: [ORDER] },
+			]);
+			return new Response(JSON.stringify({
+				data: {
+					transactions: {
+						pageInfo: { hasNextPage: false },
+						edges: [
+							{ cursor: 'reservation', node: { id: reservation, recipient: PROCESS, owner: { address: BUYER }, tags: [] } },
+						],
+					},
+				},
+			}), { status: 200, headers: { 'content-type': 'application/json' } });
+		}) as unknown as typeof fetch;
+		const client = new ReferenceClient({ graphql: 'https://gql.test', fetch: fetcher });
+
+		await expect(client.findCarrierReservationTransaction(PROCESS, ORDER, BUYER)).resolves.toBe(reservation);
 	});
 
 	it('cancels only an open live order created by the signer', async () => {

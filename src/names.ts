@@ -9,6 +9,10 @@ const GRAPHQL_PAGE_SIZE = 100;
 const GRAPHQL_MAX_PAGES = 100;
 const CARRIER_LOOKUP_CONCURRENCY = 8;
 const COMPUTE_TIMEOUT = 12_000;
+const CARRIER_RETRY_BASE_DELAY = 1_000;
+const CARRIER_RETRY_MAX_DELAY = 8_000;
+const DEFAULT_CARRIER_READ_PATHS = ['now', 'compute'] as const;
+const MARKETPLACE_CARRIER_READ_ATTEMPTS = 4;
 
 export type NamesNamespace = Namespace & {
 	/** name -> reference id carried by a carrier process */
@@ -64,7 +68,12 @@ export type CarrierState = {
 export type CarrierReadResult = {
 	state: CarrierState;
 	provider: string;
+	path: CarrierReadPath;
 };
+
+export type CarrierReadPath = 'now' | 'compute';
+export type CarrierReadPathOption = CarrierReadPath | readonly CarrierReadPath[];
+export type CarrierReadRetryProgress = { attempt: number; total: number; delayMs: number };
 
 export type OfferCandidate = {
 	id: string;
@@ -75,6 +84,36 @@ export type OfferCandidate = {
 	asking: string;
 	minimumFee: string;
 	deadline: number;
+};
+
+export type MarketplaceListingStatus = 'resolving' | 'ready' | 'unavailable';
+
+export type MarketplaceListing = {
+	name: string;
+	processId: string;
+	status: MarketplaceListingStatus;
+	candidate: OfferCandidate;
+	retry?: CarrierReadRetryProgress;
+	order?: SwapOrder;
+	state?: CarrierState;
+	provider?: string;
+	path?: CarrierReadPath;
+	error?: string;
+};
+
+export type MarketplaceListingRetryProgress = CarrierReadRetryProgress & { name: string; processId: string };
+
+export type MarketplaceListingsOptions = {
+	graphql: string;
+	provider: string;
+	fetch: typeof fetch;
+	signal?: AbortSignal;
+	concurrency?: number;
+	requestTimeout?: number;
+	path?: CarrierReadPathOption;
+	maxAttempts?: number;
+	retryBaseDelay?: number;
+	onRetry?: (progress: MarketplaceListingRetryProgress) => void;
 };
 
 type GraphqlTag = { name: string; value: string };
@@ -88,6 +127,53 @@ type GraphqlNode = {
 
 export function isArweaveId(value: string): boolean {
 	return ARWEAVE_ID.test(value);
+}
+
+export function servingNodeFromHostname(hostname: string): string {
+	if (isLocalhostHostname(hostname)) return 'arweave.net';
+	if (!hostname || hostname.includes(':') || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)) {
+		return hostname;
+	}
+
+	const firstDot = hostname.indexOf('.');
+	const parentHostname = firstDot === -1 ? '' : hostname.slice(firstDot + 1);
+	return parentHostname.includes('.') ? parentHostname : hostname;
+}
+
+export function normalizeServingNodeOrigin(value: string, defaultProtocol = 'https:'): string | null {
+	const requestedNode = value.trim();
+	if (!requestedNode || /\s/.test(requestedNode)) return null;
+
+	try {
+		const url = new URL(requestedNode.includes('://') ? requestedNode : `${defaultProtocol}//${requestedNode}`);
+		return (url.protocol === 'http:' || url.protocol === 'https:') && isValidServingNodeHostname(url.hostname)
+			? url.origin
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+export function servingNodeOrigin(location: {
+	protocol: string;
+	hostname: string;
+	port?: string;
+	search?: string;
+	hash?: string;
+}): string {
+	const hashQueryIndex = location.hash?.indexOf('?') ?? -1;
+	const hashSearch = hashQueryIndex === -1 ? '' : location.hash?.slice(hashQueryIndex);
+	const requestedNode = (
+		new URLSearchParams(location.search ?? '').get('node') ?? new URLSearchParams(hashSearch).get('node')
+	)?.trim();
+	if (requestedNode) {
+		const origin = normalizeServingNodeOrigin(requestedNode, location.protocol);
+		if (origin) return origin;
+	}
+
+	if (isLocalhostHostname(location.hostname)) return 'https://arweave.net';
+	const port = location.port ? `:${location.port}` : '';
+	return `${location.protocol}//${servingNodeFromHostname(location.hostname)}${port}`;
 }
 
 /** Parse a namespace manifest without resolving carrier entries. */
@@ -186,34 +272,44 @@ export async function readCarrierState(
 		fetch: typeof fetch;
 		signal?: AbortSignal;
 		requestTimeout?: number;
+		path?: CarrierReadPathOption;
+		maxAttempts?: number;
+		retryBaseDelay?: number;
+		onRetry?: (progress: CarrierReadRetryProgress) => void;
 	}
 ): Promise<CarrierReadResult> {
 	if (!isArweaveId(processId)) throw new TypeError('invalid-carrier-process-id');
 	const provider = options.provider.replace(/\/+$/, '');
-	const paths = [
-		`${provider}/${processId}~process@1.0/compute&max-age=60?require-codec=json%401.0&accept-bundle=true`,
-		`${provider}/${processId}~process@1.0/now&max-age=60?require-codec=json%401.0&accept-bundle=true`,
-	];
+	const paths = normalizeCarrierReadPaths(options.path);
+	const maxAttempts = normalizeAttempts(options.maxAttempts ?? 1);
+	const retryBaseDelay = Math.max(0, options.retryBaseDelay ?? CARRIER_RETRY_BASE_DELAY);
 	let lastError: unknown;
 
-	for (const path of paths) {
-		const request = timeoutSignal(options.signal, options.requestTimeout ?? COMPUTE_TIMEOUT);
-		try {
-			const response = await options.fetch(path, {
-				headers: {
-					accept: 'application/json',
-					'require-codec': 'application/json',
-					'accept-bundle': 'true',
-				},
-				signal: request.signal,
-			});
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			return { state: parseCarrierState(await response.json()), provider };
-		} catch (error) {
-			lastError = error;
-		} finally {
-			request.cleanup();
+	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+		for (const path of paths) {
+			const request = timeoutSignal(options.signal, options.requestTimeout ?? COMPUTE_TIMEOUT);
+			try {
+				const response = await options.fetch(carrierReadUrl(provider, processId, path), {
+					headers: {
+						accept: 'application/json',
+						'require-codec': 'application/json',
+						'accept-bundle': 'true',
+					},
+					signal: request.signal,
+				});
+				if (!response.ok) throw new Error(`HTTP ${response.status}`);
+				return { state: parseCarrierState(await response.json()), provider, path };
+			} catch (error) {
+				lastError = error;
+			} finally {
+				request.cleanup();
+			}
 		}
+
+		if (options.signal?.aborted || attempt === maxAttempts) break;
+		const delayMs = Math.min(retryBaseDelay * 2 ** (attempt - 1), CARRIER_RETRY_MAX_DELAY);
+		options.onRetry?.({ attempt: attempt + 1, total: maxAttempts, delayMs });
+		await delay(delayMs, options.signal);
 	}
 
 	throw lastError instanceof Error ? lastError : new Error('compute-provider-failed');
@@ -229,6 +325,10 @@ export async function waitForCarrierState(
 		interval?: number;
 		timeout?: number;
 		requestTimeout?: number;
+		path?: CarrierReadPathOption;
+		maxAttempts?: number;
+		retryBaseDelay?: number;
+		onRetry?: (progress: CarrierReadRetryProgress) => void;
 	}
 ): Promise<CarrierReadResult> {
 	const startedAt = Date.now();
@@ -421,6 +521,150 @@ export async function discoverOfferCandidates(
 		.filter((candidate) => processIds.has(candidate.processId));
 }
 
+export async function findReservationTransaction(
+	processId: string,
+	orderId: string,
+	buyer: string,
+	options: { graphql: string; fetch: typeof fetch; signal?: AbortSignal }
+): Promise<string | null> {
+	if (![processId, orderId, buyer].every(isArweaveId)) throw new TypeError('invalid-reservation-lookup');
+	const nodes = await queryTransactions(
+		options.graphql,
+		[
+			{ name: 'action', values: ['register-interest'] },
+			{ name: 'order-id', values: [orderId] },
+		],
+		options.fetch,
+		options.signal,
+		'names-reservation-graphql'
+	);
+	return nodes.find((node) =>
+		isArweaveId(node.id) &&
+		node.recipient === processId &&
+		node.owner.address === buyer
+	)?.id ?? null;
+}
+
+export async function listMarketplaceListings(
+	namespaceNames: Record<string, string> | Promise<Record<string, string>>,
+	options: MarketplaceListingsOptions
+): Promise<MarketplaceListing[]> {
+	return streamMarketplaceListings(namespaceNames, () => undefined, options);
+}
+
+export async function streamMarketplaceListings(
+	namespaceNames: Record<string, string> | Promise<Record<string, string>>,
+	onUpdate: (listings: MarketplaceListing[]) => void,
+	options: MarketplaceListingsOptions
+): Promise<MarketplaceListing[]> {
+	const resolvedNamespace = await Promise.resolve(namespaceNames);
+	const candidates = await discoverOfferCandidates(resolvedNamespace, {
+		graphql: options.graphql,
+		fetch: options.fetch,
+		signal: options.signal,
+	});
+	const namesByProcess = reverseNamespace(resolvedNamespace);
+	const groups = new Map<string, OfferCandidate[]>();
+
+	for (const candidate of candidates) {
+		const held = groups.get(candidate.processId) ?? [];
+		held.push(candidate);
+		groups.set(candidate.processId, held);
+	}
+
+	const work: Array<{ name: string; processId: string; candidates: OfferCandidate[]; candidate: OfferCandidate }> = [];
+	for (const [processId, held] of groups) {
+		const name = namesByProcess[processId];
+		const candidate = held[0];
+		if (!name || !candidate) continue;
+		work.push({ name, processId, candidates: held, candidate });
+	}
+
+	let listings: MarketplaceListing[] = work.map(({ name, processId, candidate }) => ({
+		name,
+		processId,
+		status: 'resolving',
+		candidate,
+	}));
+	onUpdate([...listings]);
+
+	let cursor = 0;
+	const concurrency = normalizeConcurrency(options.concurrency ?? 4);
+	const workers = Array.from({ length: Math.min(concurrency, work.length) }, async () => {
+		while (cursor < work.length) {
+			if (options.signal?.aborted) throw options.signal.reason;
+			const index = cursor;
+			cursor += 1;
+			const item = work[index];
+			if (!item) continue;
+			const { name, processId, candidates: held, candidate: firstCandidate } = item;
+			let next: MarketplaceListing;
+			try {
+				const result = await readCarrierState(processId, {
+					provider: options.provider,
+					fetch: options.fetch,
+					signal: options.signal,
+					requestTimeout: options.requestTimeout,
+					path: options.path,
+					maxAttempts: options.maxAttempts ?? MARKETPLACE_CARRIER_READ_ATTEMPTS,
+					retryBaseDelay: options.retryBaseDelay,
+					onRetry: (retry) => {
+						if (options.signal?.aborted) return;
+						options.onRetry?.({ ...retry, name, processId });
+						listings = listings.map((listing) =>
+							listing.processId === processId ? { ...listing, retry } : listing
+						);
+						onUpdate([...listings]);
+					},
+				});
+				const candidate = held.find((entry) => isLiveOfferCandidate(result.state, entry));
+				if (!candidate) {
+					next = { name, processId, status: 'unavailable', candidate: firstCandidate };
+				} else {
+					next = {
+						name,
+						processId,
+						status: 'ready',
+						candidate,
+						order: result.state.orders[candidate.id],
+						state: result.state,
+						provider: result.provider,
+						path: result.path,
+					};
+				}
+			} catch (error) {
+				next = {
+					name,
+					processId,
+					status: 'unavailable',
+					candidate: firstCandidate,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+
+			listings = listings.map((listing) => (listing.processId === processId ? next : listing));
+			onUpdate([...listings]);
+		}
+	});
+	await Promise.all(workers);
+
+	return listings.filter((listing) => listing.status === 'ready');
+}
+
+export function isLiveOfferCandidate(state: CarrierState, candidate: OfferCandidate): boolean {
+	const order = state.orders[candidate.id];
+	return Boolean(
+		order &&
+			LIVE_ORDER.has(order.status) &&
+			order.quantity === 1 &&
+			order.deadline > state.swapHeight &&
+			state.balances[order.creator] === '0' &&
+			order.creator === candidate.creator &&
+			order.asking === candidate.asking &&
+			order.minimumFee === candidate.minimumFee
+	);
+}
+
 export function carrierRecord(name: string, processId: string, state: CarrierState): OwnedName {
 	return {
 		name,
@@ -545,6 +789,12 @@ function toOfferCandidate(node: GraphqlNode): OfferCandidate | null {
 	};
 }
 
+function reverseNamespace(names: Record<string, string>): Record<string, string> {
+	const reversed: Record<string, string> = {};
+	for (const [name, id] of Object.entries(names)) reversed[id] = name;
+	return reversed;
+}
+
 async function gqlJson(
 	endpoint: string,
 	args: {
@@ -625,6 +875,49 @@ function text(value: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function isLocalhostHostname(hostname: string): boolean {
+	const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+	return (
+		normalized === 'localhost' ||
+		normalized.endsWith('.localhost') ||
+		normalized === '::1' ||
+		/^127(?:\.\d{1,3}){3}$/.test(normalized)
+	);
+}
+
+function isValidServingNodeHostname(hostname: string): boolean {
+	const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+	if (normalized === 'localhost' || normalized.endsWith('.localhost') || normalized.includes(':')) return true;
+
+	const labels = normalized.replace(/\.$/, '').split('.');
+	return labels.length >= 2 && labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
+}
+
+function normalizeCarrierReadPaths(path: CarrierReadPathOption | undefined): CarrierReadPath[] {
+	const paths = path === undefined ? DEFAULT_CARRIER_READ_PATHS : Array.isArray(path) ? path : [path];
+	const unique: CarrierReadPath[] = [];
+	for (const held of paths) {
+		if (held !== 'now' && held !== 'compute') throw new TypeError('invalid-carrier-read-path');
+		if (!unique.includes(held)) unique.push(held);
+	}
+	if (!unique.length) throw new TypeError('invalid-carrier-read-path');
+	return unique;
+}
+
+function normalizeAttempts(value: number): number {
+	if (!Number.isSafeInteger(value) || value < 1) throw new TypeError('invalid-carrier-read-attempts');
+	return value;
+}
+
+function normalizeConcurrency(value: number): number {
+	if (!Number.isSafeInteger(value) || value < 1) throw new TypeError('invalid-marketplace-listing-concurrency');
+	return value;
+}
+
+function carrierReadUrl(provider: string, processId: string, path: CarrierReadPath): string {
+	return `${provider}/${processId}~process@1.0/${path}&max-age=60?require-codec=json%401.0&accept-bundle=true`;
 }
 
 function timeoutSignal(parent: AbortSignal | undefined, timeout: number): { signal: AbortSignal; cleanup: () => void } {
