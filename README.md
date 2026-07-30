@@ -179,6 +179,9 @@ Swap helpers:
 ```ts
 await names.makeCarrierOrder(processId, { asking: '1000000000000' });
 await names.cancelCarrierOrder(processId, order.orderId);
+const costs = await names.estimateCarrierPurchaseCosts(order, processId);
+const balance = await names.walletBalance(buyerAddress);
+const reservationId = await names.findCarrierReservationTransaction(processId, order.orderId, buyerAddress);
 await names.registerCarrierInterest(processId, order);
 await names.payCarrierOrder(processId, order);
 await names.buyCarrierOrder(processId, order);
@@ -238,6 +241,8 @@ For carrier-backed names, the namespace manifest maps `name -> process id`. The 
 
 If `/now` fails, the default reader tries `/compute`. To force one path, pass `carrierReadPath: 'now'` or call `readCarrierState(processId, { provider, fetch, path: 'now' })`.
 
+Marketplace listing hydration retries carrier reads by default. Pass `maxAttempts`, `retryBaseDelay`, or `onRetry` when you want tighter control or progress updates.
+
 The current holder is the address with balance `1`. If the unit is escrowed in a live swap order, the seller is treated as the owner until settlement.
 
 ## Phase-2 Trust Model
@@ -274,8 +279,11 @@ import {
   discoverSets,
   discoverReferencesByAuthority,
   fetchMessageById,
+  findReservationTransaction,
+  normalizeServingNodeOrigin,
   parseNamesNamespace,
   readCarrierState,
+  servingNodeOrigin,
 } from '@permaweb/references';
 ```
 

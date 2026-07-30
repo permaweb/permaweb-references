@@ -9,6 +9,8 @@ import {
 	findOwnedNamesCarriers,
 	findPurchasedNamesCarriers,
 	carrierRecord,
+	findReservationTransaction as findCarrierReservationTransaction,
+	isArweaveId,
 	isCarrierProcess,
 	listMarketplaceListings as listCarrierMarketplaceListings,
 	readCarrierState,
@@ -16,7 +18,13 @@ import {
 	streamMarketplaceListings as streamCarrierMarketplaceListings,
 	waitForCarrierState,
 } from './names.js';
-import type { CarrierReadPathOption, CarrierState, MarketplaceListing, SwapOrder } from './names.js';
+import type {
+	CarrierReadPathOption,
+	CarrierState,
+	MarketplaceListing,
+	MarketplaceListingRetryProgress,
+	SwapOrder,
+} from './names.js';
 import {
 	DEFAULT_CARRIER_RESERVATION_INCLUSION_MARGIN,
 	assertSafeCarrierPurchaseOrder,
@@ -57,6 +65,14 @@ export interface ReferenceClientConfig {
 	/** fetch implementation; defaults to the global. Pass one where there is none. */
 	fetch?: typeof fetch;
 }
+
+export type CarrierPurchaseCostEstimate = {
+	asking: string;
+	registrationFee: string;
+	registrationNetworkReward: string;
+	paymentNetworkReward: string;
+	total: string;
+};
 
 const DEFAULTS = {
 	gateway: 'https://arweave.net',
@@ -256,6 +272,9 @@ export class ReferenceClient {
 			concurrency?: number;
 			requestTimeout?: number;
 			carrierReadPath?: CarrierReadPathOption;
+			maxAttempts?: number;
+			retryBaseDelay?: number;
+			onRetry?: (progress: MarketplaceListingRetryProgress) => void;
 		} = {}
 	): Promise<MarketplaceListing[]> {
 		const ns = await this.loadNamespace();
@@ -267,6 +286,9 @@ export class ReferenceClient {
 			concurrency: options.concurrency,
 			requestTimeout: options.requestTimeout,
 			path: options.carrierReadPath ?? this.carrierReadPath,
+			maxAttempts: options.maxAttempts,
+			retryBaseDelay: options.retryBaseDelay,
+			onRetry: options.onRetry,
 		});
 	}
 
@@ -278,6 +300,9 @@ export class ReferenceClient {
 			concurrency?: number;
 			requestTimeout?: number;
 			carrierReadPath?: CarrierReadPathOption;
+			maxAttempts?: number;
+			retryBaseDelay?: number;
+			onRetry?: (progress: MarketplaceListingRetryProgress) => void;
 		} = {}
 	): Promise<MarketplaceListing[]> {
 		const ns = await this.loadNamespace();
@@ -289,7 +314,50 @@ export class ReferenceClient {
 			concurrency: options.concurrency,
 			requestTimeout: options.requestTimeout,
 			path: options.carrierReadPath ?? this.carrierReadPath,
+			maxAttempts: options.maxAttempts,
+			retryBaseDelay: options.retryBaseDelay,
+			onRetry: options.onRetry,
 		});
+	}
+
+	async findCarrierReservationTransaction(
+		processId: string,
+		orderId: string,
+		buyer: string,
+		options: { signal?: AbortSignal } = {}
+	): Promise<string | null> {
+		return findCarrierReservationTransaction(processId, orderId, buyer, {
+			graphql: this.graphql,
+			fetch: this.fetchImpl,
+			signal: options.signal,
+		});
+	}
+
+	async walletBalance(address: string): Promise<bigint> {
+		if (!isArweaveId(address)) throw new TypeError('invalid-wallet-address');
+		return this.fetchWalletBalance(address);
+	}
+
+	async estimateCarrierPurchaseCost(order: SwapOrder, processId: string): Promise<bigint> {
+		return BigInt((await this.estimateCarrierPurchaseCosts(order, processId)).total);
+	}
+
+	async estimateCarrierPurchaseCosts(order: SwapOrder, processId: string): Promise<CarrierPurchaseCostEstimate> {
+		if (!isArweaveId(processId)) throw new TypeError('invalid-carrier-process-id');
+		assertSafeCarrierPurchaseOrder(order);
+		const [registrationNetworkReward, paymentNetworkReward] = await Promise.all([
+			this.fetchGatewayAmount(`/price/0/${processId}`, 'transaction price'),
+			this.fetchGatewayAmount(`/price/0/${order.recipient}`, 'transaction price'),
+		]);
+		const asking = BigInt(order.asking);
+		const registrationFee = BigInt(order.minimumFee);
+		return {
+			asking: order.asking,
+			registrationFee: order.minimumFee,
+			registrationNetworkReward: registrationNetworkReward.toString(),
+			paymentNetworkReward: paymentNetworkReward.toString(),
+			total: (asking + maxBigInt(registrationNetworkReward, registrationFee) + paymentNetworkReward).toString(),
+		};
 	}
 
 	/** Fetch a raw document by id via /raw/ (so a manifest is returned, not resolved). */
@@ -653,4 +721,8 @@ export class ReferenceClient {
 function amountToBigInt(value: string, description: string): bigint {
 	if (!UNSIGNED_WINSTON.test(value)) throw new Error(`${description} is invalid`);
 	return BigInt(value);
+}
+
+function maxBigInt(left: bigint, right: bigint): bigint {
+	return left > right ? left : right;
 }

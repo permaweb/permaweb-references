@@ -303,6 +303,46 @@ describe('carrier process writes', () => {
 		expect(s.txs).toEqual([]);
 	});
 
+	it('quotes purchase costs and wallet balance from the configured gateway', async () => {
+		const client = new ReferenceClient({
+			fetch: carrierFetch([], { price: '7', balance: '123' }),
+		});
+
+		await expect(client.walletBalance(BUYER)).resolves.toBe(123n);
+		await expect(client.estimateCarrierPurchaseCosts(carrierOrder(), PROCESS)).resolves.toEqual({
+			asking: '100',
+			registrationFee: '9',
+			registrationNetworkReward: '7',
+			paymentNetworkReward: '7',
+			total: '116',
+		});
+		await expect(client.estimateCarrierPurchaseCost(carrierOrder(), PROCESS)).resolves.toBe(116n);
+	});
+
+	it('looks up existing reservation transactions through the configured GraphQL endpoint', async () => {
+		const reservation = 'x'.repeat(43);
+		const fetcher = vi.fn(async (_url: string, req?: RequestInit) => {
+			const body = JSON.parse(String(req?.body));
+			expect(body.variables.tags).toEqual([
+				{ name: 'action', values: ['register-interest'] },
+				{ name: 'order-id', values: [ORDER] },
+			]);
+			return new Response(JSON.stringify({
+				data: {
+					transactions: {
+						pageInfo: { hasNextPage: false },
+						edges: [
+							{ cursor: 'reservation', node: { id: reservation, recipient: PROCESS, owner: { address: BUYER }, tags: [] } },
+						],
+					},
+				},
+			}), { status: 200, headers: { 'content-type': 'application/json' } });
+		}) as unknown as typeof fetch;
+		const client = new ReferenceClient({ graphql: 'https://gql.test', fetch: fetcher });
+
+		await expect(client.findCarrierReservationTransaction(PROCESS, ORDER, BUYER)).resolves.toBe(reservation);
+	});
+
 	it('cancels only an open live order created by the signer', async () => {
 		const order = carrierOrder({ creator: HOLDER, recipient: HOLDER });
 		const s = stub(HOLDER);

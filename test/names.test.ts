@@ -1,18 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+	findReservationTransaction,
 	findNamesNamespaceEntries,
 	findOwnedNamesCarriers,
 	findPurchasedNamesCarriers,
 	carrierTarget,
 	isLiveOfferCandidate,
 	listMarketplaceListings,
+	normalizeServingNodeOrigin,
 	ownerOfCarrier,
 	parseNamesNamespace,
 	parseCarrierState,
 	readCarrierState,
 	resolveNamesNamespace,
 	resolveNamesNamespaceReference,
+	servingNodeOrigin,
 	streamMarketplaceListings,
 } from '../src/names';
 
@@ -186,6 +189,29 @@ describe('mainnet names namespace helpers', () => {
 	});
 });
 
+describe('serving node helpers', () => {
+	it('derives parent nodes and validates explicit node overrides', () => {
+		expect(servingNodeOrigin({ protocol: 'https:', hostname: 'lunar.arweave.net' })).toBe('https://arweave.net');
+		expect(servingNodeOrigin({ protocol: 'http:', hostname: 'localhost', port: '3000' })).toBe('https://arweave.net');
+		expect(servingNodeOrigin({
+			protocol: 'https:',
+			hostname: 'ao.arweave.net',
+			search: '?node=state-1.forward.computer',
+		})).toBe('https://state-1.forward.computer');
+		expect(servingNodeOrigin({
+			protocol: 'https:',
+			hostname: 'ao.arweave.net',
+			hash: '#/names?node=http%3A%2F%2F127.0.0.1%3A8734',
+		})).toBe('http://127.0.0.1:8734');
+		expect(servingNodeOrigin({
+			protocol: 'https:',
+			hostname: 'lunar.arweave.net',
+			search: '?node=javascript%3Aalert(1)',
+		})).toBe('https://arweave.net');
+		expect(normalizeServingNodeOrigin('not a host')).toBeNull();
+	});
+});
+
 describe('carrier state parsing', () => {
 	it('parses current carrier state and extracts owner/target', () => {
 		const parsed = parseCarrierState({ body: JSON.stringify(state()) });
@@ -197,6 +223,33 @@ describe('carrier state parsing', () => {
 });
 
 describe('carrier marketplace listings', () => {
+	it('finds a reservation transaction for the exact process, order, and buyer', async () => {
+		const reservation = 'x'.repeat(43);
+		const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			expect(JSON.parse(String(init?.body)).variables.tags).toEqual([
+				{ name: 'action', values: ['register-interest'] },
+				{ name: 'order-id', values: [ORDER] },
+			]);
+			return Response.json({
+				data: {
+					transactions: {
+						pageInfo: { hasNextPage: false },
+						edges: [
+							{ cursor: 'wrong-recipient', node: { id: 'a'.repeat(43), recipient: PROCESS_TWO, owner: { address: BUYER }, tags: [] } },
+							{ cursor: 'wrong-buyer', node: { id: 'b'.repeat(43), recipient: PROCESS, owner: { address: HOLDER }, tags: [] } },
+							{ cursor: 'match', node: { id: reservation, recipient: PROCESS, owner: { address: BUYER }, tags: [] } },
+						],
+					},
+				},
+			});
+		});
+
+		await expect(findReservationTransaction(PROCESS, ORDER, BUYER, {
+			graphql: 'https://gql.test',
+			fetch: fetcher,
+		})).resolves.toBe(reservation);
+	});
+
 	it('groups offer candidates by process and returns only live verified listings', async () => {
 		const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 			if (init?.method === 'POST') {
@@ -265,6 +318,52 @@ describe('carrier marketplace listings', () => {
 			expect.stringContaining(`${LEGACY_REFERENCE}~process@1.0`),
 			expect.any(Object)
 		);
+	});
+
+	it('retries carrier hydration and streams retry progress', async () => {
+		const retries: unknown[] = [];
+		const updates: Array<Array<{ processId: string; status: string; retry?: unknown }>> = [];
+		let readAttempts = 0;
+		const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (init?.method === 'POST') {
+				return Response.json({
+					data: {
+						transactions: {
+							pageInfo: { hasNextPage: false },
+							edges: [offerNode(ORDER, PROCESS)],
+						},
+					},
+				});
+			}
+			if (String(input).includes(`${PROCESS}~process@1.0/now`)) {
+				readAttempts += 1;
+				if (readAttempts === 1) return new Response('timeout', { status: 504 });
+				return Response.json(state({ balances: { [HOLDER]: '0' } }));
+			}
+			throw new Error(`unexpected fetch: ${String(input)}`);
+		});
+
+		const listings = await streamMarketplaceListings({ alpha: PROCESS }, (next) => {
+			updates.push(next.map((listing) => ({
+				processId: listing.processId,
+				status: listing.status,
+				retry: listing.retry,
+			})));
+		}, {
+			graphql: 'https://gql.test',
+			provider: 'https://node.test',
+			fetch: fetcher,
+			path: 'now',
+			maxAttempts: 2,
+			retryBaseDelay: 0,
+			onRetry: (retry) => retries.push(retry),
+		});
+
+		expect(listings).toHaveLength(1);
+		expect(retries).toEqual([{ name: 'alpha', processId: PROCESS, attempt: 2, total: 2, delayMs: 0 }]);
+		expect(updates[1]).toEqual([
+			{ processId: PROCESS, status: 'resolving', retry: { attempt: 2, total: 2, delayMs: 0 } },
+		]);
 	});
 
 	it('streams resolving and unavailable states without returning stale listings', async () => {
