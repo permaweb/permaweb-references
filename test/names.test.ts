@@ -62,7 +62,7 @@ function offerNode(id: string, processId: string, overrides: Record<string, stri
 		'offer-quantity': '1',
 		asking: '100',
 		'minimum-fee': '1',
-		deadline: '200',
+		deadline: '20',
 		...overrides,
 	};
 	return {
@@ -251,7 +251,7 @@ describe('carrier marketplace listings', () => {
 			name: 'alpha',
 			processId: PROCESS,
 			status: 'ready',
-			candidate: { id: ORDER, asking: '100', minimumFee: '1', deadline: 200 },
+			candidate: { id: ORDER, asking: '100', minimumFee: '1', deadline: 20 },
 			order: { orderId: ORDER, asking: '100', minimumFee: '1', deadline: 200, status: 'open' },
 			provider: 'https://node.test',
 			path: 'now',
@@ -309,7 +309,7 @@ describe('carrier marketplace listings', () => {
 		]);
 	});
 
-	it('checks the full live order economics for candidate readiness', () => {
+	it('checks live order economics for candidate readiness', () => {
 		const parsed = parseCarrierState(state({ balances: { [HOLDER]: '0' } }));
 		expect(isLiveOfferCandidate(parsed, {
 			id: ORDER,
@@ -319,7 +319,7 @@ describe('carrier marketplace listings', () => {
 			timestamp: 1700000000,
 			asking: '100',
 			minimumFee: '1',
-			deadline: 200,
+			deadline: 20,
 		})).toBe(true);
 		expect(isLiveOfferCandidate(parsed, {
 			id: ORDER,
@@ -329,7 +329,7 @@ describe('carrier marketplace listings', () => {
 			timestamp: 1700000000,
 			asking: '101',
 			minimumFee: '1',
-			deadline: 200,
+			deadline: 20,
 		})).toBe(false);
 		expect(isLiveOfferCandidate(parseCarrierState(state()), {
 			id: ORDER,
@@ -339,7 +339,7 @@ describe('carrier marketplace listings', () => {
 			timestamp: 1700000000,
 			asking: '100',
 			minimumFee: '1',
-			deadline: 200,
+			deadline: 20,
 		})).toBe(false);
 	});
 });

@@ -502,20 +502,19 @@ export class ReferenceClient {
 	/** Create a live swap order for a carrier. Requires the signer to hold the carrier unit now. */
 	async makeCarrierOffer(
 		processId: string,
-		opts: { asking: AmountLike; currentHeight?: number; minimumFee?: AmountLike; deadline?: number }
+		opts: { asking: AmountLike; minimumFee?: AmountLike; deadline?: number }
 	): Promise<{ id: string }> {
 		const signer = this.requireTransactionSigner();
 		const { signerAddress, state } = await this.requireCarrierHolder(processId, signer);
 		const liveOrder = Object.values(state.orders).find((order) => order.quantity === 1 && (order.status === 'open' || order.status === 'reserved'));
 		if (liveOrder) throw new Error(`carrier already has a live order: ${liveOrder.orderId}`);
-		const currentHeight = await this.carrierTip(state, opts.currentHeight);
-		return this.sendCarrierTransaction(signer, signerAddress, buildCarrierMakeOffer(processId, { ...opts, currentHeight }));
+		return this.sendCarrierTransaction(signer, signerAddress, buildCarrierMakeOffer(processId, opts));
 	}
 
 	/** Alias for the swap terminology used in the carrier process. */
 	async makeCarrierOrder(
 		processId: string,
-		opts: { asking: AmountLike; currentHeight?: number; minimumFee?: AmountLike; deadline?: number }
+		opts: { asking: AmountLike; minimumFee?: AmountLike; deadline?: number }
 	): Promise<{ id: string }> {
 		return this.makeCarrierOffer(processId, opts);
 	}

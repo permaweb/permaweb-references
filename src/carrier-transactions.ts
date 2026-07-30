@@ -5,14 +5,13 @@ import type { TransactionMessage } from './signer.js';
 export const DEFAULT_CARRIER_REGISTRATION_FEE = 100_000_000n;
 export const MAXIMUM_CARRIER_REGISTRATION_FEE = 10_000_000_000n;
 export const MAXIMUM_CARRIER_OFFER_PRICE = 66_000_000_000_000_000_000n;
-export const DEFAULT_CARRIER_OFFER_BLOCKS = 21_600;
+export const DEFAULT_CARRIER_OFFER_DEADLINE = 20;
 export const DEFAULT_CARRIER_RESERVATION_INCLUSION_MARGIN = 2;
 
 export type AmountLike = string | number | bigint;
 
 export interface CarrierMakeOfferOptions {
 	asking: AmountLike;
-	currentHeight: number;
 	minimumFee?: AmountLike;
 	deadline?: number;
 }
@@ -46,7 +45,6 @@ export function buildCarrierTransfer(processId: string, recipient: string): Tran
 
 export function buildCarrierMakeOffer(processId: string, opts: CarrierMakeOfferOptions): TransactionMessage {
 	assertArweaveId(processId, 'invalid-carrier-process-id');
-	if (!Number.isSafeInteger(opts.currentHeight) || opts.currentHeight < 0) throw new TypeError('invalid-current-height');
 	const asking = normalizeAmount(opts.asking, {
 		name: 'asking',
 		positive: true,
@@ -57,8 +55,8 @@ export function buildCarrierMakeOffer(processId: string, opts: CarrierMakeOfferO
 		positive: false,
 		maximum: MAXIMUM_CARRIER_REGISTRATION_FEE,
 	});
-	const deadline = opts.deadline ?? opts.currentHeight + DEFAULT_CARRIER_OFFER_BLOCKS;
-	if (!Number.isSafeInteger(deadline) || deadline <= opts.currentHeight) throw new TypeError('invalid-carrier-offer-deadline');
+	const deadline = opts.deadline ?? DEFAULT_CARRIER_OFFER_DEADLINE;
+	if (!Number.isSafeInteger(deadline) || deadline < 1) throw new TypeError('invalid-carrier-offer-deadline');
 
 	return {
 		target: processId,

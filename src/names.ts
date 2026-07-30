@@ -555,8 +555,7 @@ export function isLiveOfferCandidate(state: CarrierState, candidate: OfferCandid
 			state.balances[order.creator] === '0' &&
 			order.creator === candidate.creator &&
 			order.asking === candidate.asking &&
-			order.minimumFee === candidate.minimumFee &&
-			order.deadline === candidate.deadline
+			order.minimumFee === candidate.minimumFee
 	);
 }
 

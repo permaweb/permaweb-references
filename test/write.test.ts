@@ -274,10 +274,11 @@ describe('carrier process writes', () => {
 		expect(s.txs).toEqual([]);
 	});
 
-	it('makes an offer only from live holder state and a valid current height', async () => {
+	it('makes an offer only from live holder state with a relative deadline', async () => {
 		const s = stub(HOLDER);
+		const fetcher = vi.fn(carrierFetch([carrierState()], { height: 120 }));
 		const client = new ReferenceClient({
-			fetch: carrierFetch([carrierState()], { height: 120 }),
+			fetch: fetcher,
 			signer: s.signer,
 		});
 
@@ -289,21 +290,16 @@ describe('carrier process writes', () => {
 			asking: '1000',
 			deposit: '0',
 			'minimum-fee': '100000000',
-			deadline: String(120 + 21600),
+			deadline: '20',
 		});
+		expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/info'))).toBe(false);
 	});
 
-	it('fails closed when gateway height lookup is malformed', async () => {
+	it('rejects invalid relative offer deadlines before signing', async () => {
 		const s = stub(HOLDER);
-		const fetcher = (async (url: string) => {
-			const held = String(url);
-			if (held.includes('~process@1.0/')) return new Response(JSON.stringify(carrierState()), { status: 200 });
-			if (held.endsWith('/info')) return new Response(JSON.stringify({ height: 'bad' }), { status: 200 });
-			return new Response('5', { status: 200 });
-		}) as unknown as typeof fetch;
-		const client = new ReferenceClient({ fetch: fetcher, signer: s.signer });
+		const client = new ReferenceClient({ fetch: carrierFetch([carrierState()]), signer: s.signer });
 
-		await expect(client.makeCarrierOffer(PROCESS, { asking: '1000' })).rejects.toThrow(/valid height/);
+		await expect(client.makeCarrierOffer(PROCESS, { asking: '1000', deadline: 0 })).rejects.toThrow(/deadline/);
 		expect(s.txs).toEqual([]);
 	});
 
