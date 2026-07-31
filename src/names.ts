@@ -286,7 +286,7 @@ export async function readCarrierState(
 						signal: request.signal,
 					});
 					if (!response.ok) throw new Error(`HTTP ${response.status}`);
-					return { state: parseCarrierState(await response.json()), provider, path };
+					return { state: parseCarrierState(await response.text()), provider, path };
 				} catch (error) {
 					lastError = error;
 				} finally {
@@ -877,7 +877,7 @@ function unwrapState(value: unknown): Record<string, unknown> {
 	let held = value;
 	for (let depth = 0; depth < 3; depth += 1) {
 		if (typeof held === 'string') {
-			held = JSON.parse(held);
+			held = parseJsonPreservingLargeIntegers(held);
 			continue;
 		}
 		if (isRecord(held) && Object.keys(held).length <= 4 && 'body' in held) {
@@ -888,6 +888,70 @@ function unwrapState(value: unknown): Record<string, unknown> {
 	}
 	if (!isRecord(held)) throw new TypeError('invalid-carrier-state');
 	return held;
+}
+
+function parseJsonPreservingLargeIntegers(text: string): unknown {
+	return JSON.parse(quoteLargeIntegerTokens(text));
+}
+
+function quoteLargeIntegerTokens(text: string): string {
+	let output = '';
+	let i = 0;
+
+	while (i < text.length) {
+		const char = text[i]!;
+		if (char === '"') {
+			const start = i;
+			i += 1;
+			while (i < text.length) {
+				const held = text[i]!;
+				i += 1;
+				if (held === '\\') {
+					i += 1;
+				} else if (held === '"') {
+					break;
+				}
+			}
+			output += text.slice(start, i);
+			continue;
+		}
+
+		if (char === '-' || isDigit(char)) {
+			const start = i;
+			if (char === '-') i += 1;
+			if (text[i] === '0') {
+				i += 1;
+			} else {
+				while (i < text.length && isDigit(text[i]!)) i += 1;
+			}
+			if (text[i] === '.') {
+				i += 1;
+				while (i < text.length && isDigit(text[i]!)) i += 1;
+			}
+			if (text[i] === 'e' || text[i] === 'E') {
+				i += 1;
+				if (text[i] === '+' || text[i] === '-') i += 1;
+				while (i < text.length && isDigit(text[i]!)) i += 1;
+			}
+
+			const token = text.slice(start, i);
+			output += shouldQuoteIntegerToken(token) ? `"${token}"` : token;
+			continue;
+		}
+
+		output += char;
+		i += 1;
+	}
+
+	return output;
+}
+
+function shouldQuoteIntegerToken(token: string): boolean {
+	return UNSIGNED_INTEGER.test(token) && BigInt(token) > BigInt(Number.MAX_SAFE_INTEGER);
+}
+
+function isDigit(value: string): boolean {
+	return value >= '0' && value <= '9';
 }
 
 function stringRecord(value: unknown): Record<string, string> | null {

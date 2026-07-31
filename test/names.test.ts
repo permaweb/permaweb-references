@@ -292,6 +292,21 @@ describe('carrier state parsing', () => {
 			saleOrder: { orderId: ORDER, creator: HOLDER, status: 'open' },
 		});
 	});
+
+	it('preserves large integer order amounts when parsing raw JSON carrier state', () => {
+		const text = JSON.stringify(state({ balances: { [HOLDER]: 0 } })).replace('"100"', '9999000000000000');
+		const parsed = parseCarrierState(text);
+
+		expect(parsed.orders[ORDER]).toMatchObject({
+			asking: '9999000000000000',
+			orderId: ORDER,
+			status: 'open',
+		});
+		expect(carrierOwnership(parsed)).toMatchObject({
+			address: HOLDER,
+			status: 'escrowed',
+		});
+	});
 });
 
 describe('carrier marketplace listings', () => {
