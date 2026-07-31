@@ -169,6 +169,7 @@ describe('findReferences', () => {
 			timestamp: 2,
 			source: 'set',
 			kind: 'reference',
+			type: 'legacy-reference',
 		});
 	});
 
@@ -233,6 +234,7 @@ describe('findReferences', () => {
 			authority: holder,
 			value: target,
 			kind: 'carrier',
+			type: 'carrier',
 			source: 'process',
 		});
 		await expect(client.resolveName('alpha')).resolves.toBe(target);
@@ -287,10 +289,11 @@ describe('findReferences', () => {
 		await expect(client.resolveName('alpha')).rejects.toThrow('HTTP 504');
 	});
 
-	it('rejects owner discovery when carrier state verification fails', async () => {
+	it('skips unverified carrier ownership when live state verification fails', async () => {
 		const processId = 'p'.repeat(43);
 		const holder = 'h'.repeat(43);
 		const target = 't'.repeat(43);
+		const errors: unknown[] = [];
 		const fetchImpl = (async (url: string, init?: RequestInit) => {
 			if (String(url).includes('/raw/MANIFEST')) {
 				return new Response(JSON.stringify({ paths: { alpha: { id: processId } } }), {
@@ -338,7 +341,276 @@ describe('findReferences', () => {
 		}) as unknown as typeof fetch;
 		const client = new ReferenceClient({ fetch: fetchImpl, gateway: 'https://gw.test', namespace: 'MANIFEST' });
 
-		await expect(client.findNamesByOwner(holder)).rejects.toThrow('HTTP 504');
+		await expect(client.findNamesByOwner(holder, {
+			maxAttempts: 1,
+			onCarrierError: (error) => errors.push(error),
+		})).resolves.toEqual([]);
+		expect(errors).toHaveLength(1);
+	});
+
+	it('returns carrier names that are escrowed in a live sale by the seller', async () => {
+		const processId = 'p'.repeat(43);
+		const holder = 'h'.repeat(43);
+		const target = 't'.repeat(43);
+		const orderId = 'o'.repeat(43);
+		const fetchImpl = (async (url: string, init?: RequestInit) => {
+			if (String(url).includes('/MANIFEST/serialize~json@1.0')) {
+				return new Response('not serialized', { status: 404 });
+			}
+			if (String(url).includes('/raw/MANIFEST')) {
+				return new Response(JSON.stringify({ paths: { alpha: { id: processId } } }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+			if (String(url).includes(`${processId}~process@1.0`)) {
+				return new Response(
+					JSON.stringify({
+						'execution-device': 'carrier@1.0',
+						name: 'alpha',
+						'total-supply': '1',
+						balances: { [holder]: '0' },
+						value: { target },
+						orders: {
+							[orderId]: {
+								'order-id': orderId,
+								creator: holder,
+								recipient: holder,
+								quantity: '1',
+								asking: '100',
+								deposit: '0',
+								'minimum-fee': '1',
+								deadline: '200',
+								'created-at': '100',
+								status: 'open',
+							},
+						},
+					}),
+					{ status: 200, headers: { 'content-type': 'application/json' } }
+				);
+			}
+
+			const body = JSON.parse(String(init?.body));
+			const q = body.query as string;
+			if (q.includes('transaction(id:')) {
+				return new Response(JSON.stringify({ data: { transaction: null } }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+
+			const tags = body.variables?.tags as Array<{ name: string; values: string[] }> | undefined;
+			const owners = body.variables?.owners as string[] | undefined;
+			const isSellerOfferQuery =
+				owners?.[0] === holder &&
+				tags?.some((tag) => tag.name === 'action' && tag.values.includes('make-offer')) &&
+				tags?.some((tag) => tag.name === 'offer-quantity' && tag.values.includes('1'));
+			const edges = isSellerOfferQuery
+				? [
+						{
+							cursor: 'offer',
+							node: {
+								id: orderId,
+								recipient: processId,
+								owner: { address: holder },
+								tags: [
+									{ name: 'action', value: 'make-offer' },
+									{ name: 'offer-quantity', value: '1' },
+								],
+							},
+						},
+					]
+				: [];
+			return new Response(JSON.stringify({ data: { transactions: { pageInfo: { hasNextPage: false }, edges } } }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			});
+		}) as unknown as typeof fetch;
+		const client = new ReferenceClient({ fetch: fetchImpl, gateway: 'https://gw.test', namespace: 'MANIFEST' });
+
+		await expect(client.findNamesByOwner(holder)).resolves.toMatchObject([
+			{
+				name: 'alpha',
+				referenceId: processId,
+				authority: holder,
+				value: target,
+				kind: 'carrier',
+				type: 'carrier',
+				ownership: 'escrowed',
+				saleOrder: { orderId, creator: holder, status: 'open' },
+			},
+		]);
+	});
+
+	it('streams verified owner names while skipping carrier hydration failures', async () => {
+		const processId = 'p'.repeat(43);
+		const failedProcessId = 'q'.repeat(43);
+		const holder = 'h'.repeat(43);
+		const target = 't'.repeat(43);
+		const updates: string[][] = [];
+		const errors: Array<{ name: string; processId: string }> = [];
+		const fetchImpl = (async (url: string, init?: RequestInit) => {
+			if (String(url).includes('/MANIFEST/serialize~json@1.0')) {
+				return new Response('not serialized', { status: 404 });
+			}
+			if (String(url).includes('/raw/MANIFEST')) {
+				return new Response(JSON.stringify({
+					paths: {
+						alpha: { id: processId },
+						beta: { id: failedProcessId },
+					},
+				}), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+			if (String(url).includes(`${processId}~process@1.0`)) {
+				return new Response(
+					JSON.stringify({
+						'execution-device': 'carrier@1.0',
+						name: 'alpha',
+						'total-supply': '1',
+						balances: { [holder]: '1' },
+						value: { target },
+					}),
+					{ status: 200, headers: { 'content-type': 'application/json' } }
+				);
+			}
+			if (String(url).includes(`${failedProcessId}~process@1.0`)) {
+				return new Response('timeout', { status: 504 });
+			}
+
+			const body = JSON.parse(String(init?.body));
+			const q = body.query as string;
+			if (q.includes('transaction(id:')) {
+				return new Response(JSON.stringify({ data: { transaction: null } }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+
+			const tags = body.variables?.tags as Array<{ name: string; values: string[] }> | undefined;
+			const isOwnedCarrierQuery = tags?.some((tag) => tag.name === 'initial-holder' && tag.values.includes(holder));
+			const deviceTag = tags?.find((tag) => tag.name === 'execution-device' || tag.name === 'device')?.name;
+			const edges = isOwnedCarrierQuery && deviceTag === 'execution-device'
+				? [
+						{
+							cursor: 'alpha',
+							node: {
+								id: processId,
+								owner: { address: holder },
+								tags: [
+									{ name: 'execution-device', value: 'carrier@1.0' },
+									{ name: 'initial-holder', value: holder },
+									{ name: 'initial-value', value: target },
+								],
+							},
+						},
+						{
+							cursor: 'beta',
+							node: {
+								id: failedProcessId,
+								owner: { address: holder },
+								tags: [
+									{ name: 'execution-device', value: 'carrier@1.0' },
+									{ name: 'initial-holder', value: holder },
+									{ name: 'initial-value', value: target },
+								],
+							},
+						},
+					]
+				: [];
+			return new Response(JSON.stringify({ data: { transactions: { pageInfo: { hasNextPage: false }, edges } } }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			});
+		}) as unknown as typeof fetch;
+		const client = new ReferenceClient({ fetch: fetchImpl, gateway: 'https://gw.test', namespace: 'MANIFEST' });
+
+		const final = await client.streamNamesByOwner(
+			holder,
+			(names) => updates.push(names.map((entry) => entry.name)),
+			{
+				concurrency: 1,
+				maxAttempts: 1,
+				onCarrierError: (_error, carrier) => errors.push({ name: carrier.name, processId: carrier.processId }),
+			}
+		);
+
+		expect(final).toMatchObject([
+			{ name: 'alpha', processId, authority: holder, type: 'carrier', ownership: 'owned' },
+		]);
+		expect(updates[0]).toEqual([]);
+		expect(updates.some((names) => names.includes('alpha'))).toBe(true);
+		expect(errors).toEqual([{ name: 'beta', processId: failedProcessId }]);
+	});
+
+	it('can fetch only carrier owner names without legacy reference discovery', async () => {
+		const processId = 'p'.repeat(43);
+		const holder = 'h'.repeat(43);
+		const target = 't'.repeat(43);
+		const fetchImpl = (async (url: string, init?: RequestInit) => {
+			if (String(url).includes('/MANIFEST/serialize~json@1.0')) {
+				return new Response('not serialized', { status: 404 });
+			}
+			if (String(url).includes('/raw/MANIFEST')) {
+				return new Response(JSON.stringify({ paths: { alpha: { id: processId } } }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+			if (String(url).includes(`${processId}~process@1.0`)) {
+				return new Response(
+					JSON.stringify({
+						'execution-device': 'carrier@1.0',
+						name: 'alpha',
+						'total-supply': '1',
+						balances: { [holder]: '1' },
+						value: { target },
+					}),
+					{ status: 200, headers: { 'content-type': 'application/json' } }
+				);
+			}
+
+			const body = JSON.parse(String(init?.body));
+			const q = body.query as string;
+			if (q.includes('authority')) throw new Error('legacy reference discovery should not run');
+			if (q.includes('transaction(id:')) {
+				return new Response(JSON.stringify({ data: { transaction: null } }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			}
+
+			const tags = body.variables?.tags as Array<{ name: string; values: string[] }> | undefined;
+			const isOwnedCarrierQuery = tags?.some((tag) => tag.name === 'initial-holder' && tag.values.includes(holder));
+			const deviceTag = tags?.find((tag) => tag.name === 'execution-device' || tag.name === 'device')?.name;
+			const edges = isOwnedCarrierQuery && deviceTag === 'execution-device'
+				? [
+						{
+							cursor: 'alpha',
+							node: {
+								id: processId,
+								owner: { address: holder },
+								tags: [
+									{ name: 'execution-device', value: 'carrier@1.0' },
+									{ name: 'initial-holder', value: holder },
+									{ name: 'initial-value', value: target },
+								],
+							},
+						},
+					]
+				: [];
+			return new Response(JSON.stringify({ data: { transactions: { pageInfo: { hasNextPage: false }, edges } } }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			});
+		}) as unknown as typeof fetch;
+		const client = new ReferenceClient({ fetch: fetchImpl, gateway: 'https://gw.test', namespace: 'MANIFEST' });
+
+		await expect(client.findNamesByOwner(holder, { types: 'carrier', maxAttempts: 1 })).resolves.toMatchObject([
+			{ name: 'alpha', type: 'carrier', processId, authority: holder },
+		]);
 	});
 
 	it('rejects a namespace root reference that is not owned by the trusted bootstrap publisher', async () => {

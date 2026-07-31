@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
 	findReservationTransaction,
+	findEscrowedNamesCarriers,
 	findNamesNamespaceEntries,
 	findOwnedNamesCarriers,
 	findPurchasedNamesCarriers,
 	carrierTarget,
+	carrierOwnership,
+	carrierRecord,
 	isLiveOfferCandidate,
 	listMarketplaceListings,
 	normalizeServingNodeOrigin,
@@ -187,6 +190,55 @@ describe('mainnet names namespace helpers', () => {
 			{ name: 'beta', processId: PROCESS_TWO },
 		]);
 	});
+
+	it('discovers carrier names listed by a seller', async () => {
+		const namespace = parseNamesNamespace(manifest({ alpha: { id: PROCESS }, beta: { id: PROCESS_TWO } }));
+		const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body));
+			expect(body.variables.owners).toEqual([HOLDER]);
+			expect(body.variables.tags).toEqual([
+				{ name: 'action', values: ['make-offer'] },
+				{ name: 'offer-quantity', values: ['1'] },
+			]);
+			return Response.json({
+				data: {
+					transactions: {
+						pageInfo: { hasNextPage: false },
+						edges: [
+							{
+								cursor: 'offer',
+								node: {
+									id: ORDER,
+									recipient: PROCESS,
+									owner: { address: HOLDER },
+									tags: [
+										{ name: 'action', value: 'make-offer' },
+										{ name: 'offer-quantity', value: '1' },
+									],
+								},
+							},
+							{
+								cursor: 'legacy',
+								node: {
+									id: ORDER_TWO,
+									recipient: LEGACY_REFERENCE,
+									owner: { address: HOLDER },
+									tags: [
+										{ name: 'action', value: 'make-offer' },
+										{ name: 'offer-quantity', value: '1' },
+									],
+								},
+							},
+						],
+					},
+				},
+			});
+		});
+
+		await expect(findEscrowedNamesCarriers(namespace, HOLDER, { graphql: 'https://gql.test', fetch: fetcher })).resolves.toEqual([
+			{ name: 'alpha', processId: PROCESS },
+		]);
+	});
 });
 
 describe('serving node helpers', () => {
@@ -218,7 +270,27 @@ describe('carrier state parsing', () => {
 
 		expect(parsed.device).toBe('carrier@1.0');
 		expect(ownerOfCarrier(parsed)).toBe(HOLDER);
+		expect(carrierOwnership(parsed)).toEqual({ address: HOLDER, status: 'owned' });
 		expect(carrierTarget(parsed.value)).toBe(REFERENCE);
+	});
+
+	it('treats a live escrowed sale order as seller-owned', () => {
+		const parsed = parseCarrierState(state({ balances: { [HOLDER]: '0' } }));
+		const record = carrierRecord('alpha', PROCESS, parsed);
+
+		expect(ownerOfCarrier(parsed)).toBe(HOLDER);
+		expect(carrierOwnership(parsed)).toMatchObject({
+			address: HOLDER,
+			status: 'escrowed',
+			order: { orderId: ORDER, status: 'open' },
+		});
+		expect(record).toMatchObject({
+			name: 'alpha',
+			authority: HOLDER,
+			type: 'carrier',
+			ownership: 'escrowed',
+			saleOrder: { orderId: ORDER, creator: HOLDER, status: 'open' },
+		});
 	});
 });
 
@@ -337,7 +409,7 @@ describe('carrier marketplace listings', () => {
 			}
 			if (String(input).includes(`${PROCESS}~process@1.0/now`)) {
 				readAttempts += 1;
-				if (readAttempts === 1) return new Response('timeout', { status: 504 });
+				if (readAttempts <= 2) return new Response('timeout', { status: 504 });
 				return Response.json(state({ balances: { [HOLDER]: '0' } }));
 			}
 			throw new Error(`unexpected fetch: ${String(input)}`);
@@ -463,15 +535,37 @@ describe('carrier state reads', () => {
 		const urls: string[] = [];
 		const fetcher = vi.fn(async (input: RequestInfo | URL) => {
 			urls.push(String(input));
-			return urls.length === 1 ? new Response('timeout', { status: 504 }) : Response.json(state());
+			return String(input).includes('/now&') ? new Response('timeout', { status: 504 }) : Response.json(state());
 		});
 
 		const result = await readCarrierState(PROCESS, { provider: 'https://node.test', fetch: fetcher });
 
 		expect(result.path).toBe('compute');
-		expect(fetcher).toHaveBeenCalledTimes(2);
+		expect(fetcher).toHaveBeenCalledTimes(3);
 		expect(urls[0]).toContain('/now&max-age=60');
-		expect(urls[1]).toContain('/compute&max-age=60');
+		expect(urls[1]).toContain('require-codec=application%2Fjson');
+		expect(urls[2]).toContain('/compute&max-age=60');
+	});
+
+	it('tries the HyperBEAM json codec form before the application/json fallback', async () => {
+		const urls: string[] = [];
+		const codecs: string[] = [];
+		const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			urls.push(String(input));
+			codecs.push(String((init?.headers as Record<string, string>)?.['require-codec']));
+			return urls.length === 1 ? new Response('unsupported codec', { status: 406 }) : Response.json(state());
+		});
+
+		const result = await readCarrierState(PROCESS, {
+			provider: 'https://node.test',
+			fetch: fetcher,
+			path: 'now',
+		});
+
+		expect(result.path).toBe('now');
+		expect(codecs).toEqual(['json@1.0', 'application/json']);
+		expect(urls[0]).toContain('require-codec=json%401.0');
+		expect(urls[1]).toContain('require-codec=application%2Fjson');
 	});
 
 	it('can force a single carrier read path', async () => {
