@@ -1,4 +1,5 @@
 import type { Tag } from './types.js';
+import { bundlerDataItemEndpoint, transactionEndpoint } from './endpoints.js';
 
 export interface SendOptions {
 	bundler?: string;
@@ -115,11 +116,6 @@ export function fromWallet(wallet: any, opts: { host?: string; gateway?: string;
 	return signer;
 }
 
-function txEndpoint(origin: string): string {
-	const base = origin.replace(/\/+$/, '');
-	return base.endsWith('/tx') ? base : `${base}/tx`;
-}
-
 /**
  * JWK signer: signs an ANS-104 data item and POSTs it to the bundler (no Turbo
  * SDK). Default bundler is set by the client; override per deployment. Needs
@@ -139,12 +135,18 @@ export function fromJwk(jwk: any, opts: { bundler?: string; fetch?: typeof fetch
 			await item.sign(signer);
 			const f = sendOpts.fetch ?? opts.fetch ?? (globalThis.fetch as typeof fetch | undefined);
 			if (!f) throw new Error('No fetch available for bundler upload');
-			const res = await f(txEndpoint(sendOpts.bundler ?? opts.bundler ?? DEFAULT_BUNDLER), {
+			const res = await f(bundlerDataItemEndpoint(sendOpts.bundler ?? opts.bundler ?? DEFAULT_BUNDLER), {
 				method: 'POST',
-				headers: { 'content-type': 'application/octet-stream' },
+				headers: {
+					accept: 'application/json, text/plain, */*',
+					'content-type': 'application/octet-stream',
+				},
 				body: item.getRaw(),
 			});
-			if (!res.ok) throw new Error(`bundler upload failed: ${res.status} ${res.statusText}`);
+			if (!res.ok) {
+				const details = res.headers.get('details');
+				throw new Error(`bundler upload failed: ${res.status} ${res.statusText}${details ? ` (${details})` : ''}`);
+			}
 			return { id: item.id };
 		},
 		async signTransaction(message, sendOpts = {}) {
@@ -199,7 +201,7 @@ async function postSignedTransaction(
 ): Promise<void> {
 	const f = options.fetch ?? (globalThis.fetch as typeof fetch | undefined);
 	if (!f) throw new Error('No fetch available for transaction upload');
-	const res = await f(txEndpoint(options.gateway), {
+	const res = await f(transactionEndpoint(options.gateway), {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify(signed.transaction),

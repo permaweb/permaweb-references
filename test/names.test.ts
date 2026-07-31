@@ -18,6 +18,7 @@ import {
 	servingNodeOrigin,
 	streamMarketplaceListings,
 } from '../src/names';
+import type { CarrierReadObservation } from '../src/names';
 
 const PROCESS = 'p'.repeat(43);
 const PROCESS_TWO = 'q'.repeat(43);
@@ -461,17 +462,25 @@ describe('carrier state reads', () => {
 
 	it('falls back to /compute when /now fails', async () => {
 		const urls: string[] = [];
+		const observations: CarrierReadObservation[] = [];
 		const fetcher = vi.fn(async (input: RequestInfo | URL) => {
 			urls.push(String(input));
 			return urls.length === 1 ? new Response('timeout', { status: 504 }) : Response.json(state());
 		});
 
-		const result = await readCarrierState(PROCESS, { provider: 'https://node.test', fetch: fetcher });
+		const result = await readCarrierState(PROCESS, {
+			provider: 'https://node.test',
+			fetch: fetcher,
+			onRead: (observation) => observations.push(observation),
+		});
 
 		expect(result.path).toBe('compute');
 		expect(fetcher).toHaveBeenCalledTimes(2);
 		expect(urls[0]).toContain('/now&max-age=60');
 		expect(urls[1]).toContain('/compute&max-age=60');
+		expect(observations).toHaveLength(2);
+		expect(observations[0]).toMatchObject({ path: 'now', status: 504, error: expect.any(Error) });
+		expect(observations[1]).toMatchObject({ path: 'compute', status: 200, state: expect.any(Object) });
 	});
 
 	it('can force a single carrier read path', async () => {

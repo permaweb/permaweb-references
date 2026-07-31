@@ -172,6 +172,71 @@ await names.transferCarrier(processId, recipientAddress);
 await names.makeCarrierOffer(processId, { asking: '1000000000000' });
 ```
 
+To create a new reference, point a carrier at it, and transfer the carrier in
+one workflow, use the included JWK transfer utility:
+
+```bash
+npm install arweave arbundles
+npm run transfer-carrier -- \
+  --reference-wallet /path/to/new-wallet.json \
+  --carrier-wallet /path/to/carrier-owner-wallet.json \
+  --carrier-name NAME
+```
+
+The reference wallet creates and controls the new reference. The carrier wallet
+must be its current owner; it signs the target update and then transfers the
+carrier to the reference wallet after the live process confirms the target
+update. The utility uses the carrier's current target as the new reference's
+initial value; pass `--value INITIAL_REFERENCE_VALUE` to override it. Pass
+`--carrier PROCESS_ID` instead of `--carrier-name NAME` to skip name resolution.
+It prints the reference id, target-update transaction id, and carrier-transfer
+transaction id as each step succeeds.
+
+Add `--dry-run` to resolve the name, print the carrier id and all three planned
+actions, and validate the wallets and live carrier owner without creating or
+posting any transactions.
+
+Carrier writes are mined on Arweave before an `arweave-scheduler@1.0` process
+can apply them. The SDK therefore waits up to 35 minutes for each target or
+ownership state change by default. While waiting, the transfer utility logs
+every carrier-state fetch, including its provider and path, target, owner,
+balances, value, swap height, and whether the expected state matches. If a
+previous run timed out after posting a transaction, resume without creating
+another reference by passing its printed id:
+
+```bash
+npm run transfer-carrier -- \
+  --reference-wallet /path/to/new-wallet.json \
+  --carrier-wallet /path/to/carrier-owner-wallet.json \
+  --carrier-name NAME \
+  --reference EXISTING_REFERENCE_ID
+```
+
+When the carrier already points to that reference, the utility skips both
+reference creation and the target transaction and proceeds to the ownership
+transfer. If that transfer has also landed, a later resume reports the completed
+state without posting anything else.
+
+If the transfer transaction was already posted but is still waiting for the
+carrier scheduler, reuse it as well so restarting only observes state:
+
+```bash
+npm run transfer-carrier -- \
+  --reference-wallet /path/to/new-wallet.json \
+  --carrier-wallet /path/to/carrier-owner-wallet.json \
+  --carrier PROCESS_ID \
+  --reference EXISTING_REFERENCE_ID \
+  --transfer-transaction EXISTING_TRANSFER_TRANSACTION_ID
+```
+
+The transfer utility defaults to the local HyperBEAM bundler endpoint at
+`http://localhost:8734/tx~bundler@1.0?codec-device=ans104@1.0&accept=json@1.0`.
+This invokes the bundler directly so the reference item's committed
+`device=reference@1.0` tag cannot replace the bundler during path resolution.
+The SDK also normalizes the equivalent `/~bundler@1.0/tx` and
+`/~bundler@1.0/item` forms to this direct-device route. Override it with
+`--bundler URL` when using another ANS-104 upload service.
+
 `fromWallet(window.arweaveWallet)` uses `wallet.sign` for carrier calls, so it works with ArConnect/Wander-style wallets. Before posting, it checks that the signed transaction has no data and that the owner is the expected signer.
 
 Swap helpers:

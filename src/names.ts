@@ -14,6 +14,9 @@ const CARRIER_RETRY_MAX_DELAY = 8_000;
 const DEFAULT_CARRIER_READ_PATHS = ['now', 'compute'] as const;
 const MARKETPLACE_CARRIER_READ_ATTEMPTS = 4;
 
+/** Carrier writes are mined on L1 before an arweave-scheduler process sees them. */
+export const DEFAULT_CARRIER_STATE_TIMEOUT = 35 * 60_000;
+
 export type NamesNamespace = Namespace & {
 	/** name -> reference id carried by a carrier process */
 	references: Record<string, string>;
@@ -74,6 +77,17 @@ export type CarrierReadResult = {
 export type CarrierReadPath = 'now' | 'compute';
 export type CarrierReadPathOption = CarrierReadPath | readonly CarrierReadPath[];
 export type CarrierReadRetryProgress = { attempt: number; total: number; delayMs: number };
+
+export type CarrierReadObservation = {
+	attempt: number;
+	total: number;
+	provider: string;
+	path: CarrierReadPath;
+	url: string;
+	status?: number;
+	state?: CarrierState;
+	error?: unknown;
+};
 
 export type OfferCandidate = {
 	id: string;
@@ -276,6 +290,7 @@ export async function readCarrierState(
 		maxAttempts?: number;
 		retryBaseDelay?: number;
 		onRetry?: (progress: CarrierReadRetryProgress) => void;
+		onRead?: (observation: CarrierReadObservation) => void;
 	}
 ): Promise<CarrierReadResult> {
 	if (!isArweaveId(processId)) throw new TypeError('invalid-carrier-process-id');
@@ -288,8 +303,10 @@ export async function readCarrierState(
 	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
 		for (const path of paths) {
 			const request = timeoutSignal(options.signal, options.requestTimeout ?? COMPUTE_TIMEOUT);
+			const url = carrierReadUrl(provider, processId, path);
+			let status: number | undefined;
 			try {
-				const response = await options.fetch(carrierReadUrl(provider, processId, path), {
+				const response = await options.fetch(url, {
 					headers: {
 						accept: 'application/json',
 						'require-codec': 'application/json',
@@ -297,10 +314,14 @@ export async function readCarrierState(
 					},
 					signal: request.signal,
 				});
+				status = response.status;
 				if (!response.ok) throw new Error(`HTTP ${response.status}`);
-				return { state: parseCarrierState(await response.json()), provider, path };
+				const state = parseCarrierState(await response.json());
+				notifyCarrierRead(options.onRead, { attempt, total: maxAttempts, provider, path, url, status, state });
+				return { state, provider, path };
 			} catch (error) {
 				lastError = error;
+				notifyCarrierRead(options.onRead, { attempt, total: maxAttempts, provider, path, url, status, error });
 			} finally {
 				request.cleanup();
 			}
@@ -329,10 +350,11 @@ export async function waitForCarrierState(
 		maxAttempts?: number;
 		retryBaseDelay?: number;
 		onRetry?: (progress: CarrierReadRetryProgress) => void;
+		onRead?: (observation: CarrierReadObservation) => void;
 	}
 ): Promise<CarrierReadResult> {
 	const startedAt = Date.now();
-	const timeout = options.timeout ?? 180_000;
+	const timeout = options.timeout ?? DEFAULT_CARRIER_STATE_TIMEOUT;
 
 	while (Date.now() - startedAt < timeout) {
 		if (options.signal?.aborted) throw options.signal.reason;
@@ -909,6 +931,17 @@ function normalizeCarrierReadPaths(path: CarrierReadPathOption | undefined): Car
 function normalizeAttempts(value: number): number {
 	if (!Number.isSafeInteger(value) || value < 1) throw new TypeError('invalid-carrier-read-attempts');
 	return value;
+}
+
+function notifyCarrierRead(
+	callback: ((observation: CarrierReadObservation) => void) | undefined,
+	observation: CarrierReadObservation
+): void {
+	try {
+		callback?.(observation);
+	} catch {
+		// Observation callbacks must not change carrier read behavior.
+	}
 }
 
 function normalizeConcurrency(value: number): number {
