@@ -1,4 +1,4 @@
-import type { Address, OwnedName } from './types.js';
+import type { Address, NameOwnership, OwnedName, SwapOrder, SwapOrderStatus } from './types.js';
 import { parseNamespace, type Namespace } from './namespace.js';
 
 const ARWEAVE_ID = /^[A-Za-z0-9_-]{43}$/;
@@ -12,7 +12,10 @@ const COMPUTE_TIMEOUT = 12_000;
 const CARRIER_RETRY_BASE_DELAY = 1_000;
 const CARRIER_RETRY_MAX_DELAY = 8_000;
 const DEFAULT_CARRIER_READ_PATHS = ['now', 'compute'] as const;
+const DEFAULT_CARRIER_READ_CODECS = ['json@1.0', 'application/json'] as const;
 const MARKETPLACE_CARRIER_READ_ATTEMPTS = 4;
+
+export type { SwapOrder, SwapOrderStatus } from './types.js';
 
 export type NamesNamespace = Namespace & {
 	/** name -> reference id carried by a carrier process */
@@ -36,24 +39,6 @@ export type NamesCarrierEntry = {
 
 export type NamesCarrierCandidate = Pick<NamesCarrierEntry, 'name' | 'processId'>;
 
-export type SwapOrderStatus = 'open' | 'reserved' | 'settled' | 'cancelled' | 'expired';
-
-export type SwapOrder = {
-	orderId: string;
-	creator: string;
-	recipient: string;
-	asking: string;
-	deposit: string;
-	minimumFee: string;
-	deadline: number;
-	createdAt: number;
-	quantity: number;
-	status: SwapOrderStatus;
-	buyer?: string;
-	reservedUntil?: number;
-	paymentTx?: string;
-};
-
 export type CarrierState = {
 	device: string;
 	name: string;
@@ -72,8 +57,10 @@ export type CarrierReadResult = {
 };
 
 export type CarrierReadPath = 'now' | 'compute';
+export type CarrierReadCodec = typeof DEFAULT_CARRIER_READ_CODECS[number];
 export type CarrierReadPathOption = CarrierReadPath | readonly CarrierReadPath[];
 export type CarrierReadRetryProgress = { attempt: number; total: number; delayMs: number };
+export type CarrierOwnership = { address: string; status: NameOwnership; order?: SwapOrder };
 
 export type OfferCandidate = {
 	id: string;
@@ -287,22 +274,24 @@ export async function readCarrierState(
 
 	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
 		for (const path of paths) {
-			const request = timeoutSignal(options.signal, options.requestTimeout ?? COMPUTE_TIMEOUT);
-			try {
-				const response = await options.fetch(carrierReadUrl(provider, processId, path), {
-					headers: {
-						accept: 'application/json',
-						'require-codec': 'application/json',
-						'accept-bundle': 'true',
-					},
-					signal: request.signal,
-				});
-				if (!response.ok) throw new Error(`HTTP ${response.status}`);
-				return { state: parseCarrierState(await response.json()), provider, path };
-			} catch (error) {
-				lastError = error;
-			} finally {
-				request.cleanup();
+			for (const codec of DEFAULT_CARRIER_READ_CODECS) {
+				const request = timeoutSignal(options.signal, options.requestTimeout ?? COMPUTE_TIMEOUT);
+				try {
+					const response = await options.fetch(carrierReadUrl(provider, processId, path, codec), {
+						headers: {
+							accept: 'application/json',
+							'require-codec': codec,
+							'accept-bundle': 'true',
+						},
+						signal: request.signal,
+					});
+					if (!response.ok) throw new Error(`HTTP ${response.status}`);
+					return { state: parseCarrierState(await response.json()), provider, path };
+				} catch (error) {
+					lastError = error;
+				} finally {
+					request.cleanup();
+				}
 			}
 		}
 
@@ -424,11 +413,15 @@ export function parseSwapOrder(id: string, value: unknown): SwapOrder | null {
 	};
 }
 
-export function ownerOfCarrier(state: CarrierState): string | null {
+export function carrierOwnership(state: CarrierState): CarrierOwnership | null {
 	const holder = Object.entries(state.balances).find(([, balance]) => balance === '1');
-	if (holder && isArweaveId(holder[0])) return holder[0];
+	if (holder && isArweaveId(holder[0])) return { address: holder[0], status: 'owned' };
 	const escrowed = Object.values(state.orders).find((order) => LIVE_ORDER.has(order.status) && order.quantity === 1);
-	return escrowed?.creator ?? null;
+	return escrowed ? { address: escrowed.creator, status: 'escrowed', order: escrowed } : null;
+}
+
+export function ownerOfCarrier(state: CarrierState): string | null {
+	return carrierOwnership(state)?.address ?? null;
 }
 
 export function carrierTarget(value: unknown): string {
@@ -501,6 +494,32 @@ export async function findPurchasedNamesCarriers(
 		const tags = tagRecord(node.tags);
 		if (!name || tags.action !== 'register-interest' || !isArweaveId(tags['order-id'] ?? '')) continue;
 		found.set(node.recipient, { name, processId: node.recipient });
+	}
+
+	return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function findEscrowedNamesCarriers(
+	namespace: Namespace,
+	seller: string,
+	options: {
+		graphql: string;
+		fetch: typeof fetch;
+		signal?: AbortSignal;
+	}
+): Promise<NamesCarrierCandidate[]> {
+	if (!isArweaveId(seller)) return [];
+
+	const nodes = await queryOwnerOffers(seller, options);
+	const found = new Map<string, NamesCarrierCandidate>();
+
+	for (const node of nodes) {
+		if (!node.recipient || node.owner.address !== seller) continue;
+		const name = namespace.byReference[node.recipient];
+		const tags = tagRecord(node.tags);
+		if (name && tags.action === 'make-offer' && tags['offer-quantity'] === '1') {
+			found.set(node.recipient, { name, processId: node.recipient });
+		}
 	}
 
 	return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
@@ -666,14 +685,18 @@ export function isLiveOfferCandidate(state: CarrierState, candidate: OfferCandid
 }
 
 export function carrierRecord(name: string, processId: string, state: CarrierState): OwnedName {
+	const ownership = carrierOwnership(state);
 	return {
 		name,
 		referenceId: processId,
 		namespaceId: processId,
 		processId,
-		authority: ownerOfCarrier(state) ?? undefined,
+		authority: ownership?.address,
 		value: carrierTarget(state.value),
 		kind: 'carrier',
+		type: 'carrier',
+		ownership: ownership?.status,
+		...(ownership?.order ? { saleOrder: ownership.order } : {}),
 		source: 'process',
 		carrierState: state,
 	};
@@ -715,6 +738,27 @@ async function queryPurchaseRegistrations(
 		options.signal,
 		'namespace-purchases-graphql',
 		{ owners: [buyer] }
+	);
+}
+
+async function queryOwnerOffers(
+	seller: string,
+	options: {
+		graphql: string;
+		fetch: typeof fetch;
+		signal?: AbortSignal;
+	}
+): Promise<GraphqlNode[]> {
+	return queryTransactions(
+		options.graphql,
+		[
+			{ name: 'action', values: ['make-offer'] },
+			{ name: 'offer-quantity', values: ['1'] },
+		],
+		options.fetch,
+		options.signal,
+		'namespace-offers-graphql',
+		{ owners: [seller] }
 	);
 }
 
@@ -916,8 +960,8 @@ function normalizeConcurrency(value: number): number {
 	return value;
 }
 
-function carrierReadUrl(provider: string, processId: string, path: CarrierReadPath): string {
-	return `${provider}/${processId}~process@1.0/${path}&max-age=60?require-codec=json%401.0&accept-bundle=true`;
+function carrierReadUrl(provider: string, processId: string, path: CarrierReadPath, codec: CarrierReadCodec): string {
+	return `${provider}/${processId}~process@1.0/${path}&max-age=60?require-codec=${encodeURIComponent(codec)}&accept-bundle=true`;
 }
 
 function timeoutSignal(parent: AbortSignal | undefined, timeout: number): { signal: AbortSignal; cleanup: () => void } {

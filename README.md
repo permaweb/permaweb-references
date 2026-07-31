@@ -52,6 +52,7 @@ const name = await names.getName('ao');
 //   name: string,
 //   referenceId: string,
 //   kind: 'reference' | 'carrier',
+//   type: 'legacy-reference' | 'carrier',
 //   authority?: string,
 //   value: unknown,
 //   timestamp?: number,
@@ -85,14 +86,33 @@ const owned = await names.findNamesByOwner(authorityAddress);
 //     referenceId: string,
 //     namespaceId: string,
 //     kind: 'reference' | 'carrier',
+//     type: 'legacy-reference' | 'carrier',
 //     value: unknown,
+//     ownership?: 'owned' | 'escrowed',
 //     authority?: string,
-//     processId?: string
+//     processId?: string,
+//     saleOrder?: SwapOrder
 //   }
 // ]
 ```
 
-For carrier-backed names, `findNamesByOwner` discovers candidate process ids from GraphQL, then checks live carrier state. Final ownership comes from live balances, not spawn tags.
+For owner pages, stream verified results as carrier state checks finish:
+
+```ts
+const final = await names.streamNamesByOwner(
+  ownerAddress,
+  (names) => render(names),
+  {
+    types: ['legacy-reference', 'carrier'],
+    maxAttempts: 4,
+    onCarrierError: (error, carrier) => console.warn(carrier.name, error),
+  },
+);
+```
+
+For carrier-backed names, `findNamesByOwner` discovers candidate process ids from GraphQL, then checks live carrier state with bounded concurrency and retries. Final ownership comes from live balances and live sale escrow state, not spawn tags. If the carrier unit is escrowed in a live sale order, the seller is returned with `ownership: 'escrowed'` and `saleOrder`.
+
+Slow or unavailable carrier reads are skipped rather than treated as ownership. Pass `types: 'carrier'` when you do not need legacy references, or `types: 'legacy-reference'` when you do not need carriers. Pass `concurrency`, `maxAttempts`, `requestTimeout`, `retryBaseDelay`, `carrierReadPath`, or `onCarrierError` when you need tighter control or diagnostics.
 
 ## Writing Legacy References
 
@@ -243,7 +263,7 @@ If `/now` fails, the default reader tries `/compute`. To force one path, pass `c
 
 Marketplace listing hydration retries carrier reads by default. Pass `maxAttempts`, `retryBaseDelay`, or `onRetry` when you want tighter control or progress updates.
 
-The current holder is the address with balance `1`. If the unit is escrowed in a live swap order, the seller is treated as the owner until settlement.
+The current holder is the address with balance `1`. If the unit is escrowed in a live swap order, the seller is treated as the owner until settlement and owner results include `ownership: 'escrowed'`.
 
 ## Phase-2 Trust Model
 

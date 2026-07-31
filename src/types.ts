@@ -27,6 +27,26 @@ export interface Candidate {
 }
 
 export type NameKind = 'reference' | 'carrier';
+export type NameType = 'legacy-reference' | 'carrier';
+export type NameOwnership = 'owned' | 'escrowed';
+
+export type SwapOrderStatus = 'open' | 'reserved' | 'settled' | 'cancelled' | 'expired';
+
+export type SwapOrder = {
+	orderId: string;
+	creator: string;
+	recipient: string;
+	asking: string;
+	deposit: string;
+	minimumFee: string;
+	deadline: number;
+	createdAt: number;
+	quantity: number;
+	status: SwapOrderStatus;
+	buyer?: string;
+	reservedUntil?: number;
+	paymentTx?: string;
+};
 
 export interface ResolvedState {
 	message: ReferenceMessage;
@@ -53,6 +73,8 @@ export interface ResolvedName {
 	timestamp?: number;
 	source?: 'init' | 'set' | 'process';
 	kind?: NameKind;
+	/** Human-facing name source type. `kind` is kept for backward compatibility. */
+	type?: NameType;
 	carrierState?: unknown;
 }
 
@@ -75,6 +97,12 @@ export interface OwnedName {
 	authority?: Address;
 	value: unknown;
 	kind: NameKind;
+	/** Human-facing name source type. `kind` is kept for backward compatibility. */
+	type: NameType;
+	/** Direct holder, or original seller while the unit is escrowed in a live sale. */
+	ownership?: NameOwnership;
+	/** Live sale order when `ownership` is `escrowed`. */
+	saleOrder?: SwapOrder;
 	processId?: string;
 	timestamp?: number;
 	source?: 'init' | 'set' | 'process';

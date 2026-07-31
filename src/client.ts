@@ -1,10 +1,11 @@
-import type { Address, OwnedName, OwnedReference, ResolvedName, ResolvedReference } from './types.js';
+import type { Address, NameType, OwnedName, OwnedReference, ResolvedName, ResolvedReference } from './types.js';
 import { authorityOf, isInit } from './identity.js';
 import { currentState, effectiveValue } from './compute.js';
 import { buildInit, buildSet, DEVICE } from './messages.js';
 import { discoverSets, discoverReferencesByAuthority, fetchMessageById, PHASE2_BOOTSTRAP_OWNER } from './discovery.js';
 import { parseNamespace, type Namespace } from './namespace.js';
 import {
+	findEscrowedNamesCarriers,
 	findNamesNamespaceEntries,
 	findOwnedNamesCarriers,
 	findPurchasedNamesCarriers,
@@ -66,6 +67,19 @@ export interface ReferenceClientConfig {
 	fetch?: typeof fetch;
 }
 
+export interface FindNamesByOwnerOptions {
+	signal?: AbortSignal;
+	/** Which name sources to fetch. Default fetches both. */
+	types?: NameType | readonly NameType[];
+	/** Carrier hydration concurrency. Default 4, matching marketplace hydration. */
+	concurrency?: number;
+	requestTimeout?: number;
+	carrierReadPath?: CarrierReadPathOption;
+	maxAttempts?: number;
+	retryBaseDelay?: number;
+	onCarrierError?: (error: unknown, carrier: { name: string; processId: string }) => void;
+}
+
 export type CarrierPurchaseCostEstimate = {
 	asking: string;
 	registrationFee: string;
@@ -79,8 +93,12 @@ const DEFAULTS = {
 	bundler: 'https://up.arweave.net',
 };
 const MAX_NAMESPACE_REFERENCE_DEPTH = 10;
+const OWNER_NAME_TYPES = ['legacy-reference', 'carrier'] as const;
+const OWNER_CARRIER_HYDRATION_CONCURRENCY = 4;
+const OWNER_CARRIER_READ_ATTEMPTS = 4;
 type TransactionSigner = Signer & { sendTransaction: NonNullable<Signer['sendTransaction']> };
 const UNSIGNED_WINSTON = /^(?:0|[1-9]\d*)$/;
+type OwnerCarrierCandidate = { name: string; processId: string; initialValue?: string; initialHolder?: string };
 
 /**
  * Developer utility for `reference@1.0`. Reads resolve a reference's current value
@@ -167,6 +185,7 @@ export class ReferenceClient {
 			timestamp: ref.timestamp,
 			source: ref.source,
 			kind: 'reference',
+			type: 'legacy-reference',
 		};
 	}
 
@@ -206,13 +225,66 @@ export class ReferenceClient {
 	 * processes. Purchased carrier-backed names are discovered from registration txs
 	 * and then verified against current process state.
 	 */
-	async findNamesByOwner(authority: Address): Promise<OwnedName[]> {
-		const [refs, ns] = await Promise.all([this.findReferences(authority), this.loadNamespace()]);
-		const namespace = ns ?? { names: {}, byReference: {} };
-		const referenceEntries = findNamesNamespaceEntries(
-			namespace,
-			refs.map((ref) => ref.referenceId)
+	async findNamesByOwner(authority: Address, options: FindNamesByOwnerOptions = {}): Promise<OwnedName[]> {
+		return this.streamNamesByOwner(authority, () => undefined, options);
+	}
+
+	/**
+	 * Stream names controlled by a wallet as live carrier ownership checks finish.
+	 *
+	 * Updates contain only verified records. Carrier candidates that cannot be
+	 * hydrated are reported through `onCarrierError` and omitted.
+	 */
+	async streamNamesByOwner(
+		authority: Address,
+		onUpdate: (names: OwnedName[]) => void,
+		options: FindNamesByOwnerOptions = {}
+	): Promise<OwnedName[]> {
+		const types = normalizeOwnerNameTypes(options.types);
+		const { referenceRecords, carrierCandidates } = await this.ownerNameCandidates(authority, types, options.signal);
+		let latest: OwnedName[] = [];
+		let latestKey: string | undefined;
+		const emit = (records: OwnedName[]) => {
+			const next = sortOwnerNames(records);
+			const nextKey = ownerNamesKey(next);
+			if (nextKey === latestKey) return;
+			latest = next;
+			latestKey = nextKey;
+			onUpdate([...latest]);
+		};
+		emit(referenceRecords);
+
+		const carrierRecords = await this.findVerifiedOwnerCarrierRecords(
+			authority,
+			carrierCandidates,
+			options,
+			(next) => {
+				emit([...referenceRecords, ...next.filter(isOwnedName)]);
+			}
 		);
+
+		emit([...referenceRecords, ...carrierRecords.filter(isOwnedName)]);
+		return latest;
+	}
+
+	private async ownerNameCandidates(
+		authority: Address,
+		types: Set<NameType>,
+		signal?: AbortSignal
+	): Promise<{ referenceRecords: OwnedName[]; carrierCandidates: OwnerCarrierCandidate[] }> {
+		const includeLegacy = types.has('legacy-reference');
+		const includeCarrier = types.has('carrier');
+		const [refs, ns] = await Promise.all([
+			includeLegacy ? this.findReferences(authority) : Promise.resolve([]),
+			this.loadNamespace(),
+		]);
+		const namespace = ns ?? { names: {}, byReference: {} };
+		const referenceEntries = includeLegacy
+			? findNamesNamespaceEntries(
+					namespace,
+					refs.map((ref) => ref.referenceId)
+				)
+			: [];
 		const referenceRecords: Array<OwnedName | null> = await Promise.all(
 			referenceEntries.map(async (entry) => {
 				const state = await this.getReference(entry.referenceId);
@@ -226,15 +298,24 @@ export class ReferenceClient {
 					timestamp: state.timestamp,
 					source: state.source,
 					kind: 'reference' as const,
+					type: 'legacy-reference' as const,
 				};
 				return record;
 			})
 		);
 
-		const carrierOptions = { graphql: this.graphql, fetch: this.fetchImpl };
-		const [ownedCarriers, purchasedCarriers] = await Promise.all([
+		if (!includeCarrier) {
+			return {
+				referenceRecords: referenceRecords.filter(isOwnedName),
+				carrierCandidates: [],
+			};
+		}
+
+		const carrierOptions = { graphql: this.graphql, fetch: this.fetchImpl, signal };
+		const [ownedCarriers, purchasedCarriers, escrowedCarriers] = await Promise.all([
 			findOwnedNamesCarriers(namespace, authority, carrierOptions),
 			findPurchasedNamesCarriers(namespace, authority, carrierOptions),
+			findEscrowedNamesCarriers(namespace, authority, carrierOptions),
 		]);
 		const candidates = new Map<string, { name: string; processId: string; initialValue?: string; initialHolder?: string }>();
 		for (const carrier of ownedCarriers) {
@@ -248,21 +329,59 @@ export class ReferenceClient {
 		for (const carrier of purchasedCarriers) {
 			if (!candidates.has(carrier.processId)) candidates.set(carrier.processId, carrier);
 		}
+		for (const carrier of escrowedCarriers) {
+			if (!candidates.has(carrier.processId)) candidates.set(carrier.processId, carrier);
+		}
 
-		const carrierRecords: Array<OwnedName | null> = await Promise.all(
-			[...candidates.values()].map(async (candidate) => {
-				const { state } = await readCarrierState(candidate.processId, {
-					provider: this.node,
-					fetch: this.fetchImpl,
-					path: this.carrierReadPath,
-				});
-				const record = carrierRecord(candidate.name, candidate.processId, state);
-				return record.authority === authority ? record : null;
-			})
+		return {
+			referenceRecords: referenceRecords.filter(isOwnedName),
+			carrierCandidates: [...candidates.values()],
+		};
+	}
+
+	private async findVerifiedOwnerCarrierRecords(
+		authority: Address,
+		candidates: OwnerCarrierCandidate[],
+		options: FindNamesByOwnerOptions,
+		onUpdate?: (records: Array<OwnedName | null>) => void
+	): Promise<Array<OwnedName | null>> {
+		const records: Array<OwnedName | null> = Array(candidates.length).fill(null);
+		let cursor = 0;
+		const concurrency = normalizePositiveInteger(
+			options.concurrency ?? OWNER_CARRIER_HYDRATION_CONCURRENCY,
+			'invalid-owner-carrier-concurrency'
 		);
 
-		const records = [...referenceRecords, ...carrierRecords].filter((record): record is OwnedName => record !== null);
-		return records.sort((a, b) => a.name.localeCompare(b.name));
+		const workers = Array.from({ length: Math.min(concurrency, candidates.length) }, async () => {
+			while (cursor < candidates.length) {
+				if (options.signal?.aborted) throw options.signal.reason;
+				const index = cursor;
+				cursor += 1;
+				const candidate = candidates[index];
+				if (!candidate) continue;
+
+				try {
+					const { state } = await readCarrierState(candidate.processId, {
+						provider: this.node,
+						fetch: this.fetchImpl,
+						path: options.carrierReadPath ?? this.carrierReadPath,
+						signal: options.signal,
+						requestTimeout: options.requestTimeout,
+						maxAttempts: options.maxAttempts ?? OWNER_CARRIER_READ_ATTEMPTS,
+						retryBaseDelay: options.retryBaseDelay,
+					});
+					const record = carrierRecord(candidate.name, candidate.processId, state);
+					records[index] = record.authority === authority ? record : null;
+				} catch (error) {
+					if (options.signal?.aborted) throw options.signal.reason;
+					options.onCarrierError?.(error, candidate);
+					records[index] = null;
+				}
+				onUpdate?.([...records]);
+			}
+		});
+		await Promise.all(workers);
+		return records;
 	}
 
 	/** List live marketplace orders from the configured names namespace. */
@@ -725,4 +844,34 @@ function amountToBigInt(value: string, description: string): bigint {
 
 function maxBigInt(left: bigint, right: bigint): bigint {
 	return left > right ? left : right;
+}
+
+function isOwnedName(value: OwnedName | null): value is OwnedName {
+	return value !== null;
+}
+
+function sortOwnerNames(records: OwnedName[]): OwnedName[] {
+	return [...records].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function ownerNamesKey(records: OwnedName[]): string {
+	return records
+		.map((record) => `${record.kind}:${record.referenceId}:${record.ownership ?? ''}:${record.saleOrder?.orderId ?? ''}`)
+		.join('|');
+}
+
+function normalizeOwnerNameTypes(types: FindNamesByOwnerOptions['types']): Set<NameType> {
+	const values = types === undefined ? OWNER_NAME_TYPES : Array.isArray(types) ? types : [types];
+	if (!values.length) throw new TypeError('invalid-owner-name-types');
+	const normalized = new Set<NameType>();
+	for (const type of values) {
+		if (type !== 'legacy-reference' && type !== 'carrier') throw new TypeError('invalid-owner-name-type');
+		normalized.add(type);
+	}
+	return normalized;
+}
+
+function normalizePositiveInteger(value: number, message: string): number {
+	if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(message);
+	return value;
 }
